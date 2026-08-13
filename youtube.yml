@@ -1,0 +1,11 @@
+name: YouTube Otomasyon Sistemi
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sistem çalışıyor
+        run: echo "YouTube otomasyon sistemi çalışıyor"
