@@ -11,4 +11,4 @@ on:
       - name: Sistem çalışıyor
         run: |
           echo "YouTube otomasyon sistemi çalışıyor"
-          echo "Tarih: $(date)"
+          run: |
