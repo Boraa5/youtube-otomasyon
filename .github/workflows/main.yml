@@ -1,15 +1,16 @@
-name: YouTube Otomasyon Testi
+name: YouTube Otomasyon Sistemi
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 * * * *"
-    jobs:
+    - cron: "0 */6 * * *"
+
+jobs:
   test:
     runs-on: ubuntu-latest
 
     steps:
       - name: Sistem çalışıyor
         run: |
-          echo "YouTube otomasyon sistemi çalışıyor."
+          echo "YouTube otomasyon sistemi çalışıyor"
           echo "Tarih: $(date)"
