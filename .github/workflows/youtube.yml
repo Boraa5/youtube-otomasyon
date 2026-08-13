@@ -1,0 +1,12 @@
+name: YouTube Automation System
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Test System
+        run: echo "YouTube automation system is working"
