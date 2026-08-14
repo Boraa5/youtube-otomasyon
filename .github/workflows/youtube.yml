@@ -2,6 +2,8 @@ name: YouTube Automation System
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 9 * * *"
 
 jobs:
   youtube:
@@ -11,76 +13,304 @@ jobs:
       - name: Download repository
         uses: actions/checkout@v4
 
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu
+
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install google-api-python-client google-auth-oauthlib google-auth-httplib2
+          pip install openai pillow google-api-python-client google-auth google-auth-httplib2
 
-      - name: Upload video to YouTube
+      - name: Check secrets
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
         run: |
-          python <<'PY'
+          test -n "$OPENAI_API_KEY" || (echo "OPENAI_API_KEY eksik!" && exit 1)
+          test -n "$GOOGLE_CLIENT_ID" || (echo "GOOGLE_CLIENT_ID eksik!" && exit 1)
+          test -n "$GOOGLE_CLIENT_SECRET" || (echo "GOOGLE_CLIENT_SECRET eksik!" && exit 1)
+          test -n "$YOUTUBE_REFRESH_TOKEN" || (echo "YOUTUBE_REFRESH_TOKEN eksik!" && exit 1)
+          echo "Tüm secretlar mevcut."
+
+      - name: Create automation script
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          cat > automation.py <<'PY'
           import os
-          import sys
+          import json
+          import textwrap
+          import subprocess
+          from datetime import datetime, timezone
+
+          from openai import OpenAI
+          from PIL import Image, ImageDraw, ImageFont
 
           from google.oauth2.credentials import Credentials
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
 
-          client_id = os.environ["GOOGLE_CLIENT_ID"]
-          client_secret = os.environ["GOOGLE_CLIENT_SECRET"]
-          refresh_token = os.environ["YOUTUBE_REFRESH_TOKEN"]
+          OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+          GOOGLE_CLIENT_ID = os.environ["GOOGLE_CLIENT_ID"]
+          GOOGLE_CLIENT_SECRET = os.environ["GOOGLE_CLIENT_SECRET"]
+          YOUTUBE_REFRESH_TOKEN = os.environ["YOUTUBE_REFRESH_TOKEN"]
 
-          video_file = "video.mp4"
+          client = OpenAI(api_key=OPENAI_API_KEY)
 
-          if not os.path.exists(video_file):
-              print("HATA: video.mp4 bulunamadı.")
-              sys.exit(1)
+          today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+          prompt = f"""
+          Bugünün tarihi: {today}
+
+          Türkçe YouTube kanalı için tamamen özgün, ilgi çekici ve bilgi veren
+          yaklaşık 60-90 saniyelik bir video hazırla.
+
+          Konuyu sen seç.
+          Sansasyonel yalanlar, uydurma bilgiler ve doğrulanamayan iddialar kullanma.
+          Başka videolardan metin kopyalama.
+          İçerik özgün ve YouTube'a uygun olsun.
+
+          JSON olarak SADECE şu alanları üret:
+
+          {{
+            "title": "merak uyandıran Türkçe başlık",
+            "description": "YouTube açıklaması",
+            "tags": ["etiket1", "etiket2", "etiket3", "etiket4", "etiket5"],
+            "narration": "60-90 saniyelik Türkçe seslendirme metni",
+            "scenes": [
+              "1. sahnede ekranda gösterilecek kısa metin",
+              "2. sahnede ekranda gösterilecek kısa metin",
+              "3. sahnede ekranda gösterilecek kısa metin",
+              "4. sahnede ekranda gösterilecek kısa metin",
+              "5. sahnede ekranda gösterilecek kısa metin"
+            ]
+          }}
+
+          Başlık 100 karakterden kısa olsun.
+          Sahne metinleri kısa ve okunaklı olsun.
+          """
+
+          response = client.chat.completions.create(
+              model="gpt-4.1-mini",
+              response_format={"type": "json_object"},
+              messages=[
+                  {
+                      "role": "system",
+                      "content": "Sen profesyonel bir Türkçe YouTube içerik üreticisisin."
+                  },
+                  {
+                      "role": "user",
+                      "content": prompt
+                  }
+              ]
+          )
+
+          data = json.loads(response.choices[0].message.content)
+
+          title = data["title"][:100]
+          description = data["description"]
+          tags = data.get("tags", [])
+          narration = data["narration"]
+          scenes = data["scenes"][:5]
+
+          print("Başlık:", title)
+          print("İçerik oluşturuldu.")
+
+          # -------------------------
+          # SESLENDİRME
+          # -------------------------
+
+          speech = client.audio.speech.create(
+              model="gpt-4o-mini-tts",
+              voice="alloy",
+              input=narration
+          )
+
+          speech.write_to_file("narration.mp3")
+
+          # -------------------------
+          # GÖRSELLER
+          # -------------------------
+
+          os.makedirs("slides", exist_ok=True)
+
+          font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+          font_small_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+          title_font = ImageFont.truetype(font_path, 54)
+          text_font = ImageFont.truetype(font_small_path, 38)
+
+          def make_slide(text, index):
+              img = Image.new("RGB", (1280, 720), (18, 18, 24))
+              draw = ImageDraw.Draw(img)
+
+              # Üst başlık
+              draw.text(
+                  (60, 55),
+                  "GERÇEKLERİN PEŞİNDE",
+                  font=title_font,
+                  fill=(255, 255, 255)
+              )
+
+              # Sahne numarası
+              draw.text(
+                  (60, 145),
+                  f"BÖLÜM {index}",
+                  font=text_font,
+                  fill=(180, 180, 180)
+              )
+
+              wrapped = textwrap.fill(text, width=38)
+
+              bbox = draw.multiline_textbbox(
+                  (0, 0),
+                  wrapped,
+                  font=text_font,
+                  spacing=15
+              )
+
+              w = bbox[2] - bbox[0]
+              h = bbox[3] - bbox[1]
+
+              x = (1280 - w) / 2
+              y = (720 - h) / 2 + 50
+
+              draw.multiline_text(
+                  (x, y),
+                  wrapped,
+                  font=text_font,
+                  fill=(255, 255, 255),
+                  spacing=15,
+                  align="center"
+              )
+
+              path = f"slides/slide_{index}.png"
+              img.save(path)
+              return path
+
+          slide_paths = []
+
+          for i, scene in enumerate(scenes, start=1):
+              slide_paths.append(make_slide(scene, i))
+
+          # -------------------------
+          # SES SÜRESİNİ BUL
+          # -------------------------
+
+          duration_result = subprocess.check_output(
+              [
+                  "ffprobe",
+                  "-v", "error",
+                  "-show_entries", "format=duration",
+                  "-of", "default=noprint_wrappers=1:nokey=1",
+                  "narration.mp3"
+              ]
+          )
+
+          duration = float(duration_result.decode().strip())
+          per_slide = max(duration / len(slide_paths), 1)
+
+          # -------------------------
+          # FFMPEG SLIDE LİSTESİ
+          # -------------------------
+
+          with open("slides.txt", "w", encoding="utf-8") as f:
+              for path in slide_paths:
+                  f.write(f"file '{os.path.abspath(path)}'\n")
+                  f.write(f"duration {per_slide}\n")
+
+              f.write(f"file '{os.path.abspath(slide_paths[-1])}'\n")
+
+          # -------------------------
+          # VIDEO OLUŞTUR
+          # -------------------------
+
+          subprocess.run(
+              [
+                  "ffmpeg",
+                  "-y",
+                  "-f", "concat",
+                  "-safe", "0",
+                  "-i", "slides.txt",
+                  "-i", "narration.mp3",
+                  "-vf", "format=yuv420p",
+                  "-c:v", "libx264",
+                  "-preset", "veryfast",
+                  "-c:a", "aac",
+                  "-shortest",
+                  "-movflags", "+faststart",
+                  "youtube_video.mp4"
+              ],
+              check=True
+          )
+
+          # -------------------------
+          # YOUTUBE AUTH
+          # -------------------------
 
           credentials = Credentials(
               token=None,
-              refresh_token=refresh_token,
+              refresh_token=YOUTUBE_REFRESH_TOKEN,
               token_uri="https://oauth2.googleapis.com/token",
-              client_id=client_id,
-              client_secret=client_secret,
-              scopes=["https://www.googleapis.com/auth/youtube"],
+              client_id=GOOGLE_CLIENT_ID,
+              client_secret=GOOGLE_CLIENT_SECRET,
+              scopes=["https://www.googleapis.com/auth/youtube.upload"]
           )
 
           youtube = build(
               "youtube",
               "v3",
-              credentials=credentials,
+              credentials=credentials
           )
+
+          # -------------------------
+          # YOUTUBE UPLOAD
+          # -------------------------
 
           body = {
               "snippet": {
-                  "title": "Kayıp Hikâyeler",
-                  "description": "Kayıp Hikâyeler YouTube otomasyon sistemi tarafından yüklenmiştir.",
-                  "categoryId": "22",
+                  "title": title,
+                  "description": description,
+                  "tags": tags,
+                  "categoryId": "27"
               },
               "status": {
-                  "privacyStatus": "private"
+                  "privacyStatus": "public",
+                  "selfDeclaredMadeForKids": False
               }
           }
 
           media = MediaFileUpload(
-              video_file,
+              "youtube_video.mp4",
               mimetype="video/mp4",
-              resumable=True,
+              resumable=True
           )
 
           request = youtube.videos().insert(
               part="snippet,status",
               body=body,
-              media_body=media,
+              media_body=media
           )
 
           response = request.execute()
 
-          print("VIDEO YÜKLENDİ")
+          print("VIDEO BAŞARIYLA YÜKLENDİ")
           print("Video ID:", response["id"])
-          print("Durum:", response["status"]["privacyStatus"])
+          print("https://www.youtube.com/watch?v=" + response["id"])
           PY
+
+      - name: Run YouTube automation
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          python automation.py
