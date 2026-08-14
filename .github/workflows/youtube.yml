@@ -136,13 +136,13 @@ jobs:
 
           - İlk 15 saniye çok güçlü bir merak kancası olsun.
           - Akış:
-            kanca
-            arka plan
-            olay ve kanıtların kronolojisi
-            alternatif açıklamalar
-            en güçlü bulgular
-            şaşırtıcı ama dengeli sonuç
-            kısa kapanış
+          - kanca
+          - arka plan
+          - olay ve kanıtların kronolojisi
+          - alternatif açıklamalar
+          - en güçlü bulgular
+          - şaşırtıcı ama dengeli sonuç
+          - kısa kapanış
           - Konuşma dili doğal Türkçe olsun.
           - Narration içinde başlık veya bölüm başlığı bulunmasın.
           - Kaynak listesi narration içine koyma.
