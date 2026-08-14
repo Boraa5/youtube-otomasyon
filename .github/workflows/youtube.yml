@@ -8,5 +8,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test System
-        run: echo "YouTube automation system is working"
+      - name: Check Google credentials
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+        run: |
+          if [ -z "$GOOGLE_CLIENT_ID" ]; then
+            echo "GOOGLE_CLIENT_ID eksik!"
+            exit 1
+          fi
+
+          if [ -z "$GOOGLE_CLIENT_SECRET" ]; then
+            echo "GOOGLE_CLIENT_SECRET eksik!"
+            exit 1
+          fi
+
+          echo "Google kimlik bilgileri GitHub Secrets'tan aliniyor."
