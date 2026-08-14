@@ -64,8 +64,8 @@ jobs:
 
           MIN_LONG_SECONDS = 480
           MAX_LONG_SECONDS = 780
-          MIN_WORDS = 1450
-          MAX_WORDS = 2050
+          MIN_WORDS = 1100
+          MAX_WORDS = 1350
 
 
           def clean_json(text):
@@ -131,7 +131,9 @@ jobs:
           ANA VİDEO:
 
           - 8-12 dakika hedefle.
-          - 1450-2050 Türkçe kelime yaz.
+          - 1100-1350 Türkçe kelime yaz.
+- Ortalama konuşma hızında yaklaşık 9-11 dakikalık anlatım hedefle.
+
           - İlk 15 saniye çok güçlü bir merak kancası olsun.
           - Akış:
             kanca
