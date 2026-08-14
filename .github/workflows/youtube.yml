@@ -1,42 +1,36 @@
-name: YouTube Automation System
+name: YouTube AI Studio
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 9 * * *"
+    - cron: "0 6 * * *"
 
 jobs:
-  youtube:
+  publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
-      - name: Download repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install system packages
+      - name: Install
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu
+          sudo apt-get install -y ffmpeg
+          python -m pip install -U pip
+          pip install -U openai google-api-python-client google-auth pillow
 
-      - name: Install Python packages
-        run: |
-          python -m pip install --upgrade pip
-          pip install openai pillow google-api-python-client google-auth google-auth-httplib2
-
-      - name: Check secrets
+      - name: Secrets
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          O: ${{ secrets.OPENAI_API_KEY }}
+          I: ${{ secrets.GOOGLE_CLIENT_ID }}
+          S: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          R: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
         run: |
-          test -n "$OPENAI_API_KEY" || (echo "OPENAI_API_KEY eksik!" && exit 1)
-          test -n "$GOOGLE_CLIENT_ID" || (echo "GOOGLE_CLIENT_ID eksik!" && exit 1)
-          test -n "$GOOGLE_CLIENT_SECRET" || (echo "GOOGLE_CLIENT_SECRET eksik!" && exit 1)
-          test -n "$YOUTUBE_REFRESH_TOKEN" || (echo "YOUTUBE_REFRESH_TOKEN eksik!" && exit 1)
-          echo "Tüm secretlar mevcut."
+          test -n "$O" && test -n "$I" && test -n "$S" && test -n "$R"
+          echo "Secrets OK"
 
-      - name: Create automation script
+      - name: Generate and upload
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
@@ -44,273 +38,237 @@ jobs:
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
         run: |
           cat > automation.py <<'PY'
-          import os
-          import json
-          import textwrap
-          import subprocess
-          from datetime import datetime, timezone
-
+          import os,json,re,base64,subprocess
+          from pathlib import Path
           from openai import OpenAI
-          from PIL import Image, ImageDraw, ImageFont
-
           from google.oauth2.credentials import Credentials
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
 
-          OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-          GOOGLE_CLIENT_ID = os.environ["GOOGLE_CLIENT_ID"]
-          GOOGLE_CLIENT_SECRET = os.environ["GOOGLE_CLIENT_SECRET"]
-          YOUTUBE_REFRESH_TOKEN = os.environ["YOUTUBE_REFRESH_TOKEN"]
+          W=Path("work"); W.mkdir(exist_ok=True)
+          ai=OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-          client = OpenAI(api_key=OPENAI_API_KEY)
+          def js(s):
+              s=re.sub(r"^```(?:json)?|```$","",s.strip(),flags=re.I).strip()
+              return json.loads(s[s.find("{"):s.rfind("}")+1])
 
-          today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+          def plan():
+              p="""Türkçe YouTube kanalı "Gerçeklerin Peşinde" için bugün bir yüksek
+              ilgi çekici, evergreen, gerçeklere dayalı belgesel konusu seç.
+              Gizem, tarih, bilim, uzay, arkeoloji, açıklanamayan olaylar veya şaşırtıcı
+              gerçekler kullan. Önce web araması yap. Birincil kaynakları, üniversiteleri,
+              müzeleri, devlet kurumlarını ve güvenilir yayınları tercih et.
+              Uydurma bilgi, sahte alıntı veya doğrulanmamış iddiayı gerçek gibi sunma.
 
-          prompt = f"""
-          Bugünün tarihi: {today}
+              Ana video: 8-12 dakika, yaklaşık 1500-1800 Türkçe kelime. İlk 15 saniye
+              güçlü kanca; sonra arka plan, kronoloji/kanıt, farklı açıklamalar,
+              en güçlü bulgular, şaşırtıcı ama dengeli sonuç. Doğal konuşma dili.
+              Short: 40-60 saniye, ana videonun basit kesiti değil, aynı konudan
+              bağımsız güçlü kısa anlatım.
+              Ana video için 12 adet 16:9, Short için 4 adet 9:16 sinematik gerçekçi
+              görsel promptu ve 1 thumbnail promptu üret. Görsellerde yazı/logo/
+              watermark/fake document olmasın.
 
-          Türkçe YouTube kanalı için tamamen özgün, ilgi çekici ve bilgi veren
-          yaklaşık 60-90 saniyelik bir video hazırla.
+              SADECE JSON döndür:
+              {"title":"","description":"","tags":[],"narration":"",
+              "short_title":"","short_narration":"","scenes":[],
+              "short_scenes":[],"thumbnail_prompt":""}"""
+              r=ai.responses.create(model="gpt-5.1",
+                  tools=[{"type":"web_search"}],input=p)
+              return js(r.output_text)
 
-          Konuyu sen seç.
-          Sansasyonel yalanlar, uydurma bilgiler ve doğrulanamayan iddialar kullanma.
-          Başka videolardan metin kopyalama.
-          İçerik özgün ve YouTube'a uygun olsun.
+          def speech(text,out):
+              parts=[]; cur=""
+              for x in re.split(r"\n+",text):
+                  x=x.strip()
+                  while len(x)>3000:
+                      cut=x.rfind(" ",0,3000); cut=cut if cut>500 else 3000
+                      parts.append(x[:cut]); x=x[cut:].strip()
+                  if cur and len(cur)+len(x)+1>3500:
+                      parts.append(cur); cur=x
+                  else: cur+=((" " if cur else "")+x)
+              if cur: parts.append(cur)
 
-          JSON olarak SADECE şu alanları üret:
+              files=[]
+              for i,x in enumerate(parts):
+                  f=W/f"tts{i}.mp3"
+                  a=ai.audio.speech.create(
+                      model="gpt-4o-mini-tts",
+                      voice="coral",
+                      input=x,
+                      instructions="Doğal, ciddi, akıcı Türkçe belgesel anlatıcısı. Net telaffuz.",
+                      response_format="mp3"
+                  )
+                  a.write_to_file(str(f))
+                  files.append(f)
 
-          {{
-            "title": "merak uyandıran Türkçe başlık",
-            "description": "YouTube açıklaması",
-            "tags": ["etiket1", "etiket2", "etiket3", "etiket4", "etiket5"],
-            "narration": "60-90 saniyelik Türkçe seslendirme metni",
-            "scenes": [
-              "1. sahnede ekranda gösterilecek kısa metin",
-              "2. sahnede ekranda gösterilecek kısa metin",
-              "3. sahnede ekranda gösterilecek kısa metin",
-              "4. sahnede ekranda gösterilecek kısa metin",
-              "5. sahnede ekranda gösterilecek kısa metin"
-            ]
-          }}
-
-          Başlık 100 karakterden kısa olsun.
-          Sahne metinleri kısa ve okunaklı olsun.
-          """
-
-          response = client.chat.completions.create(
-              model="gpt-4.1-mini",
-              response_format={"type": "json_object"},
-              messages=[
-                  {
-                      "role": "system",
-                      "content": "Sen profesyonel bir Türkçe YouTube içerik üreticisisin."
-                  },
-                  {
-                      "role": "user",
-                      "content": prompt
-                  }
-              ]
-          )
-
-          data = json.loads(response.choices[0].message.content)
-
-          title = data["title"][:100]
-          description = data["description"]
-          tags = data.get("tags", [])
-          narration = data["narration"]
-          scenes = data["scenes"][:5]
-
-          print("Başlık:", title)
-          print("İçerik oluşturuldu.")
-
-          # -------------------------
-          # SESLENDİRME
-          # -------------------------
-
-          speech = client.audio.speech.create(
-              model="gpt-4o-mini-tts",
-              voice="alloy",
-              input=narration
-          )
-
-          speech.write_to_file("narration.mp3")
-
-          # -------------------------
-          # GÖRSELLER
-          # -------------------------
-
-          os.makedirs("slides", exist_ok=True)
-
-          font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-          font_small_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-
-          title_font = ImageFont.truetype(font_path, 54)
-          text_font = ImageFont.truetype(font_small_path, 38)
-
-          def make_slide(text, index):
-              img = Image.new("RGB", (1280, 720), (18, 18, 24))
-              draw = ImageDraw.Draw(img)
-
-              # Üst başlık
-              draw.text(
-                  (60, 55),
-                  "GERÇEKLERİN PEŞİNDE",
-                  font=title_font,
-                  fill=(255, 255, 255)
+              lst=W/"audio.txt"
+              lst.write_text(
+                  "".join(f"file '{f.resolve()}'\n" for f in files)
               )
 
-              # Sahne numarası
-              draw.text(
-                  (60, 145),
-                  f"BÖLÜM {index}",
-                  font=text_font,
-                  fill=(180, 180, 180)
+              subprocess.run([
+                  "ffmpeg","-y","-f","concat","-safe","0",
+                  "-i",str(lst),"-c:a","aac","-b:a","192k",str(out)
+              ],check=True)
+
+          def img(prompt,out,size):
+              r=ai.images.generate(
+                  model="gpt-image-1",
+                  prompt=prompt+"\nNo text, logo or watermark. Cinematic documentary still.",
+                  size=size,
+                  quality="medium",
+                  output_format="jpeg"
+              )
+              out.write_bytes(base64.b64decode(r.data[0].b64_json))
+
+          def video(audio,prompts,out,vertical=False):
+              ims=[]
+
+              for i,p in enumerate(prompts):
+                  f=W/f"{out.stem}_{i}.jpg"
+                  img(p,f,"1024x1536" if vertical else "1536x1024")
+                  ims.append(f)
+
+              d=float(subprocess.check_output([
+                  "ffprobe","-v","error",
+                  "-show_entries","format=duration",
+                  "-of","default=noprint_wrappers=1:nokey=1",
+                  str(audio)
+              ]))
+
+              sec=max(4,d/len(ims))
+              lst=W/f"{out.stem}.txt"
+
+              with lst.open("w") as f:
+                  for x in ims:
+                      f.write(f"file '{x.resolve()}'\nduration {sec:.3f}\n")
+                  f.write(f"file '{ims[-1].resolve()}'\n")
+
+              vf=(
+                  "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
+                  if vertical else
+                  "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720"
               )
 
-              wrapped = textwrap.fill(text, width=38)
-
-              bbox = draw.multiline_textbbox(
-                  (0, 0),
-                  wrapped,
-                  font=text_font,
-                  spacing=15
-              )
-
-              w = bbox[2] - bbox[0]
-              h = bbox[3] - bbox[1]
-
-              x = (1280 - w) / 2
-              y = (720 - h) / 2 + 50
-
-              draw.multiline_text(
-                  (x, y),
-                  wrapped,
-                  font=text_font,
-                  fill=(255, 255, 255),
-                  spacing=15,
-                  align="center"
-              )
-
-              path = f"slides/slide_{index}.png"
-              img.save(path)
-              return path
-
-          slide_paths = []
-
-          for i, scene in enumerate(scenes, start=1):
-              slide_paths.append(make_slide(scene, i))
-
-          # -------------------------
-          # SES SÜRESİNİ BUL
-          # -------------------------
-
-          duration_result = subprocess.check_output(
-              [
-                  "ffprobe",
-                  "-v", "error",
-                  "-show_entries", "format=duration",
-                  "-of", "default=noprint_wrappers=1:nokey=1",
-                  "narration.mp3"
-              ]
-          )
-
-          duration = float(duration_result.decode().strip())
-          per_slide = max(duration / len(slide_paths), 1)
-
-          # -------------------------
-          # FFMPEG SLIDE LİSTESİ
-          # -------------------------
-
-          with open("slides.txt", "w", encoding="utf-8") as f:
-              for path in slide_paths:
-                  f.write(f"file '{os.path.abspath(path)}'\n")
-                  f.write(f"duration {per_slide}\n")
-
-              f.write(f"file '{os.path.abspath(slide_paths[-1])}'\n")
-
-          # -------------------------
-          # VIDEO OLUŞTUR
-          # -------------------------
-
-          subprocess.run(
-              [
-                  "ffmpeg",
-                  "-y",
-                  "-f", "concat",
-                  "-safe", "0",
-                  "-i", "slides.txt",
-                  "-i", "narration.mp3",
-                  "-vf", "format=yuv420p",
-                  "-c:v", "libx264",
-                  "-preset", "veryfast",
-                  "-c:a", "aac",
+              subprocess.run([
+                  "ffmpeg","-y",
+                  "-f","concat","-safe","0",
+                  "-i",str(lst),
+                  "-i",str(audio),
+                  "-vf",vf+",format=yuv420p",
+                  "-c:v","libx264",
+                  "-preset","medium",
+                  "-crf","20",
+                  "-c:a","aac",
+                  "-b:a","192k",
                   "-shortest",
-                  "-movflags", "+faststart",
-                  "youtube_video.mp4"
-              ],
-              check=True
-          )
+                  "-movflags","+faststart",
+                  str(out)
+              ],check=True)
 
-          # -------------------------
-          # YOUTUBE AUTH
-          # -------------------------
+          def yt():
+              c=Credentials(
+                  token=None,
+                  refresh_token=os.environ["YOUTUBE_REFRESH_TOKEN"],
+                  token_uri="https://oauth2.googleapis.com/token",
+                  client_id=os.environ["GOOGLE_CLIENT_ID"],
+                  client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+                  scopes=["https://www.googleapis.com/auth/youtube.upload"]
+              )
+              return build("youtube","v3",credentials=c)
 
-          credentials = Credentials(
-              token=None,
-              refresh_token=YOUTUBE_REFRESH_TOKEN,
-              token_uri="https://oauth2.googleapis.com/token",
-              client_id=GOOGLE_CLIENT_ID,
-              client_secret=GOOGLE_CLIENT_SECRET,
-              scopes=["https://www.googleapis.com/auth/youtube.upload"]
-          )
-
-          youtube = build(
-              "youtube",
-              "v3",
-              credentials=credentials
-          )
-
-          # -------------------------
-          # YOUTUBE UPLOAD
-          # -------------------------
-
-          body = {
-              "snippet": {
-                  "title": title,
-                  "description": description,
-                  "tags": tags,
-                  "categoryId": "27"
-              },
-              "status": {
-                  "privacyStatus": "public",
-                  "selfDeclaredMadeForKids": False
+          def upload(api,file,title,desc,tags,thumb=None):
+              body={
+                  "snippet":{
+                      "title":title[:100],
+                      "description":desc[:5000],
+                      "tags":tags[:30],
+                      "categoryId":"27"
+                  },
+                  "status":{
+                      "privacyStatus":"public",
+                      "selfDeclaredMadeForKids":False,
+                      "containsSyntheticMedia":True
+                  }
               }
-          }
 
-          media = MediaFileUpload(
-              "youtube_video.mp4",
-              mimetype="video/mp4",
-              resumable=True
+              m=MediaFileUpload(
+                  str(file),
+                  mimetype="video/mp4",
+                  resumable=True,
+                  chunksize=8*1024*1024
+              )
+
+              r=api.videos().insert(
+                  part="snippet,status",
+                  body=body,
+                  media_body=m
+              ).execute()
+
+              print("VIDEO BAŞARIYLA YÜKLENDİ:",r["id"])
+
+              if thumb:
+                  api.thumbnails().set(
+                      videoId=r["id"],
+                      media_body=MediaFileUpload(
+                          str(thumb),
+                          mimetype="image/jpeg"
+                      )
+                  ).execute()
+                  print("THUMBNAIL YÜKLENDİ")
+
+              return r["id"]
+
+          d=plan()
+
+          (W/"metadata.json").write_text(
+              json.dumps(d,ensure_ascii=False,indent=2),
+              encoding="utf-8"
           )
 
-          request = youtube.videos().insert(
-              part="snippet,status",
-              body=body,
-              media_body=media
+          la=W/"long.mp3"
+          speech(d["narration"],la)
+
+          lv=W/"long.mp4"
+          video(la,d["scenes"],lv)
+
+          sa=W/"short.mp3"
+          speech(d["short_narration"],sa)
+
+          sv=W/"short.mp4"
+          video(sa,d["short_scenes"],sv,True)
+
+          th=W/"thumbnail.jpg"
+          img(d["thumbnail_prompt"],th,"1536x1024")
+
+          desc=(
+              d["description"].strip()
+              + "\n\nBu video yapay zekâ destekli üretim araçları "
+                "kullanılarak hazırlanmıştır."
+              + "\n\n#GerçeklerinPeşinde #Gizem #Belgesel"
           )
 
-          response = request.execute()
+          api=yt()
 
-          print("VIDEO BAŞARIYLA YÜKLENDİ")
-          print("Video ID:", response["id"])
-          print("https://www.youtube.com/watch?v=" + response["id"])
+          upload(
+              api,
+              lv,
+              d["title"],
+              desc,
+              d["tags"],
+              th
+          )
+
+          upload(
+              api,
+              sv,
+              d["short_title"],
+              desc,
+              d["tags"][:15]
+          )
+
+          print("AUTOMATION COMPLETED")
           PY
 
-      - name: Run YouTube automation
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-        run: |
           python automation.py
