@@ -11,26 +11,30 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install
+      - name: Install tools
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          python -m pip install -U pip
-          pip install -U openai google-api-python-client google-auth pillow
+          python -m pip install --upgrade pip
+          pip install -U openai google-api-python-client google-auth
 
-      - name: Secrets
+      - name: Check secrets
         env:
-          O: ${{ secrets.OPENAI_API_KEY }}
-          I: ${{ secrets.GOOGLE_CLIENT_ID }}
-          S: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          R: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
         run: |
-          test -n "$O" && test -n "$I" && test -n "$S" && test -n "$R"
+          test -n "$OPENAI_API_KEY" || (echo "OPENAI_API_KEY missing" && exit 1)
+          test -n "$GOOGLE_CLIENT_ID" || (echo "GOOGLE_CLIENT_ID missing" && exit 1)
+          test -n "$GOOGLE_CLIENT_SECRET" || (echo "GOOGLE_CLIENT_SECRET missing" && exit 1)
+          test -n "$YOUTUBE_REFRESH_TOKEN" || (echo "YOUTUBE_REFRESH_TOKEN missing" && exit 1)
           echo "Secrets OK"
 
-      - name: Generate and upload
+      - name: Run YouTube automation
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
@@ -38,237 +42,756 @@ jobs:
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
         run: |
           cat > automation.py <<'PY'
-          import os,json,re,base64,subprocess
+          import os
+          import json
+          import base64
+          import re
+          import subprocess
           from pathlib import Path
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+
           from openai import OpenAI
           from google.oauth2.credentials import Credentials
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
 
-          W=Path("work"); W.mkdir(exist_ok=True)
-          ai=OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+          OUT = Path("work")
+          OUT.mkdir(exist_ok=True)
 
-          def js(s):
-              s=re.sub(r"^```(?:json)?|```$","",s.strip(),flags=re.I).strip()
-              return json.loads(s[s.find("{"):s.rfind("}")+1])
+          client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-          def plan():
-              p="""Türkçe YouTube kanalı "Gerçeklerin Peşinde" için bugün bir yüksek
-              ilgi çekici, evergreen, gerçeklere dayalı belgesel konusu seç.
-              Gizem, tarih, bilim, uzay, arkeoloji, açıklanamayan olaylar veya şaşırtıcı
-              gerçekler kullan. Önce web araması yap. Birincil kaynakları, üniversiteleri,
-              müzeleri, devlet kurumlarını ve güvenilir yayınları tercih et.
-              Uydurma bilgi, sahte alıntı veya doğrulanmamış iddiayı gerçek gibi sunma.
+          MIN_LONG_SECONDS = 480
+          MAX_LONG_SECONDS = 780
+          MIN_WORDS = 1450
+          MAX_WORDS = 2050
 
-              Ana video: 8-12 dakika, yaklaşık 1500-1800 Türkçe kelime. İlk 15 saniye
-              güçlü kanca; sonra arka plan, kronoloji/kanıt, farklı açıklamalar,
-              en güçlü bulgular, şaşırtıcı ama dengeli sonuç. Doğal konuşma dili.
-              Short: 40-60 saniye, ana videonun basit kesiti değil, aynı konudan
-              bağımsız güçlü kısa anlatım.
-              Ana video için 12 adet 16:9, Short için 4 adet 9:16 sinematik gerçekçi
-              görsel promptu ve 1 thumbnail promptu üret. Görsellerde yazı/logo/
-              watermark/fake document olmasın.
-
-              SADECE JSON döndür:
-              {"title":"","description":"","tags":[],"narration":"",
-              "short_title":"","short_narration":"","scenes":[],
-              "short_scenes":[],"thumbnail_prompt":""}"""
-              r=ai.responses.create(model="gpt-5.1",
-                  tools=[{"type":"web_search"}],input=p)
-              return js(r.output_text)
-
-          def speech(text,out):
-              parts=[]; cur=""
-              for x in re.split(r"\n+",text):
-                  x=x.strip()
-                  while len(x)>3000:
-                      cut=x.rfind(" ",0,3000); cut=cut if cut>500 else 3000
-                      parts.append(x[:cut]); x=x[cut:].strip()
-                  if cur and len(cur)+len(x)+1>3500:
-                      parts.append(cur); cur=x
-                  else: cur+=((" " if cur else "")+x)
-              if cur: parts.append(cur)
-
-              files=[]
-              for i,x in enumerate(parts):
-                  f=W/f"tts{i}.mp3"
-                  a=ai.audio.speech.create(
-                      model="gpt-4o-mini-tts",
-                      voice="coral",
-                      input=x,
-                      instructions="Doğal, ciddi, akıcı Türkçe belgesel anlatıcısı. Net telaffuz.",
-                      response_format="mp3"
-                  )
-                  a.write_to_file(str(f))
-                  files.append(f)
-
-              lst=W/"audio.txt"
-              lst.write_text(
-                  "".join(f"file '{f.resolve()}'\n" for f in files)
+          def clean_json(text):
+              text = text.strip()
+              text = re.sub(
+                  r"^```(?:json)?\s*",
+                  "",
+                  text,
+                  flags=re.I
+              )
+              text = re.sub(
+                  r"\s*```$",
+                  "",
+                  text
               )
 
-              subprocess.run([
-                  "ffmpeg","-y","-f","concat","-safe","0",
-                  "-i",str(lst),"-c:a","aac","-b:a","192k",str(out)
-              ],check=True)
+              start = text.find("{")
+              end = text.rfind("}")
 
-          def img(prompt,out,size):
-              r=ai.images.generate(
+              if start < 0 or end <= start:
+                  raise ValueError("JSON bulunamadı")
+
+              return json.loads(text[start:end + 1])
+
+          def word_count(text):
+              return len(
+                  re.findall(
+                      r"\b[\wÇĞİÖŞÜçğıöşü'-]+\b",
+                      text
+                  )
+              )
+
+          def ask_plan():
+              prompt = r"""
+          Türkçe YouTube belgesel kanalı "Kayıp Hikâyeler" için TEK bir bölüm hazırla.
+
+          Konu gizem, bilim, tarih, arkeoloji, uzay, açıklanamayan olaylar veya
+          şaşırtıcı ama doğrulanabilir gerçeklerden biri olsun.
+
+          Evergreen konu seç.
+
+          Siyasi propaganda, özel kişiler hakkında suçlama, tıbbi tavsiye ve
+          uydurma paranormal iddialar kullanma.
+
+          Önce web araması yap.
+
+          Birincil kaynakları, üniversiteleri, müzeleri, devlet kurumlarını ve
+          güvenilir bilim/haber kaynaklarını tercih et.
+
+          Kaynaklarda olmayan tarih, sayı, alıntı veya olay uydurma.
+
+          Tartışmalı bir iddia varsa anlatımda bunun tartışmalı olduğunu belirt.
+
+          ANA VİDEO:
+
+          - 8-12 dakika hedefle.
+          - 1450-2050 Türkçe kelime yaz.
+          - İlk 15 saniye çok güçlü bir merak kancası olsun.
+          - Akış:
+            kanca
+            arka plan
+            olay ve kanıtların kronolojisi
+            alternatif açıklamalar
+            en güçlü bulgular
+            şaşırtıcı ama dengeli sonuç
+            kısa kapanış
+          - Konuşma dili doğal Türkçe olsun.
+          - Narration içinde başlık veya bölüm başlığı bulunmasın.
+          - Kaynak listesi narration içine koyma.
+          - Her paragraf yeni bilgi taşısın.
+
+          SHORT:
+
+          - 40-60 saniye.
+          - Ana videodan bağımsız anlaşılmalı.
+          - Kendi güçlü kancası olsun.
+          - Kendi kapanışı olsun.
+          - Ana videodan basitçe kesilmiş bir bölüm olmasın.
+
+          GÖRSELLER:
+
+          - Ana video için 12 adet 16:9 sinematik belgesel görsel promptu.
+          - Short için 6 adet 9:16 prompt.
+          - Gerçekçi ve sinematik belgesel görünümü.
+          - Tutarlı dönem ve ışık.
+          - Yazı olmasın.
+          - Logo olmasın.
+          - Watermark olmasın.
+          - Sahte belge olmasın.
+          - Sahte ekran görüntüsü olmasın.
+          - Tarihi kişiler gerekiyorsa birebir fotoğraf iddiası yerine
+            illüstratif belgesel canlandırması tarif et.
+
+          THUMBNAIL:
+
+          - 16:9.
+          - Tek güçlü merak unsuru.
+          - Sade kompozisyon.
+          - Yazı bulunmasın.
+
+          SADECE geçerli JSON döndür:
+
+          {
+            "title": "...",
+            "description": "...",
+            "tags": ["10-20 doğal Türkçe etiket"],
+            "narration": "...",
+            "short_title": "...",
+            "short_narration": "...",
+            "scenes": ["12 prompt"],
+            "short_scenes": ["6 prompt"],
+            "thumbnail_prompt": "..."
+          }
+          """
+
+              response = client.responses.create(
+                  model="gpt-5.6",
+                  tools=[{"type": "web_search"}],
+                  input=prompt,
+                  max_output_tokens=12000
+              )
+
+              return clean_json(response.output_text)
+
+          def generate_plan():
+              last = None
+
+              for attempt in range(3):
+                  data = ask_plan()
+                  last = data
+
+                  wc = word_count(
+                      data.get("narration", "")
+                  )
+
+                  sc = word_count(
+                      data.get("short_narration", "")
+                  )
+
+                  if (
+                      MIN_WORDS <= wc <= MAX_WORDS
+                      and 45 <= sc <= 180
+                      and len(data.get("scenes", [])) == 12
+                      and len(data.get("short_scenes", [])) == 6
+                  ):
+                      print(
+                          f"Plan OK: {wc} ana kelime / "
+                          f"{sc} short kelime"
+                      )
+                      return data
+
+                  print(
+                      f"Plan reddedildi: {wc} ana kelime, "
+                      f"{sc} short kelime. "
+                      f"Deneme {attempt + 1}/3"
+                  )
+
+              raise RuntimeError(
+                  "Model hedef uzunlukta senaryo üretmedi. "
+                  f"Son kelime sayısı: "
+                  f"{word_count(last.get('narration',''))}"
+              )
+
+          def tts(text, output):
+              paragraphs = [
+                  x.strip()
+                  for x in re.split(r"\n+", text)
+                  if x.strip()
+              ]
+
+              chunks = []
+              current = ""
+
+              for paragraph in paragraphs:
+
+                  while len(paragraph) > 2800:
+                      cut = paragraph.rfind(
+                          " ",
+                          0,
+                          2800
+                      )
+
+                      if cut < 500:
+                          cut = 2800
+
+                      chunks.append(
+                          paragraph[:cut].strip()
+                      )
+
+                      paragraph = paragraph[
+                          cut:
+                      ].strip()
+
+                  if (
+                      current
+                      and len(current)
+                      + len(paragraph)
+                      + 1 > 3200
+                  ):
+                      chunks.append(current)
+                      current = paragraph
+                  else:
+                      current += (
+                          " " if current else ""
+                      ) + paragraph
+
+              if current:
+                  chunks.append(current)
+
+              parts = []
+
+              for i, chunk in enumerate(chunks):
+
+                  path = OUT / (
+                      f"tts_{output.stem}_{i}.mp3"
+                  )
+
+                  audio = client.audio.speech.create(
+                      model="gpt-4o-mini-tts",
+                      voice="coral",
+                      input=chunk,
+                      instructions=(
+                          "Türkçe belgesel anlatıcısı gibi konuş. "
+                          "Doğal, ciddi, merak uyandıran ve akıcı ol. "
+                          "Kelime sonlarını net telaffuz et. "
+                          "Aşırı dramatik, robotik veya reklam gibi konuşma."
+                      ),
+                      response_format="mp3"
+                  )
+
+                  audio.write_to_file(
+                      str(path)
+                  )
+
+                  parts.append(path)
+
+              concat = OUT / (
+                  f"{output.stem}_audio.txt"
+              )
+
+              with concat.open(
+                  "w",
+                  encoding="utf-8"
+              ) as f:
+
+                  for p in parts:
+                      f.write(
+                          f"file '{p.resolve()}'\n"
+                      )
+
+              subprocess.run(
+                  [
+                      "ffmpeg",
+                      "-y",
+                      "-f",
+                      "concat",
+                      "-safe",
+                      "0",
+                      "-i",
+                      str(concat),
+                      "-c:a",
+                      "aac",
+                      "-b:a",
+                      "192k",
+                      str(output)
+                  ],
+                  check=True
+              )
+
+          def get_duration(path):
+
+              out = subprocess.check_output(
+                  [
+                      "ffprobe",
+                      "-v",
+                      "error",
+                      "-show_entries",
+                      "format=duration",
+                      "-of",
+                      "default=noprint_wrappers=1:nokey=1",
+                      str(path)
+                  ],
+                  text=True
+              )
+
+              return float(out.strip())
+
+          def make_image(
+              prompt,
+              output,
+              size
+          ):
+
+              result = client.images.generate(
                   model="gpt-image-1",
-                  prompt=prompt+"\nNo text, logo or watermark. Cinematic documentary still.",
+                  prompt=(
+                      prompt
+                      + "\nNo text. No logo. No watermark. "
+                      "High-quality cinematic documentary still."
+                  ),
                   size=size,
                   quality="medium",
                   output_format="jpeg"
               )
-              out.write_bytes(base64.b64decode(r.data[0].b64_json))
 
-          def video(audio,prompts,out,vertical=False):
-              ims=[]
-
-              for i,p in enumerate(prompts):
-                  f=W/f"{out.stem}_{i}.jpg"
-                  img(p,f,"1024x1536" if vertical else "1536x1024")
-                  ims.append(f)
-
-              d=float(subprocess.check_output([
-                  "ffprobe","-v","error",
-                  "-show_entries","format=duration",
-                  "-of","default=noprint_wrappers=1:nokey=1",
-                  str(audio)
-              ]))
-
-              sec=max(4,d/len(ims))
-              lst=W/f"{out.stem}.txt"
-
-              with lst.open("w") as f:
-                  for x in ims:
-                      f.write(f"file '{x.resolve()}'\nduration {sec:.3f}\n")
-                  f.write(f"file '{ims[-1].resolve()}'\n")
-
-              vf=(
-                  "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
-                  if vertical else
-                  "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720"
+              output.write_bytes(
+                  base64.b64decode(
+                      result.data[0].b64_json
+                  )
               )
 
-              subprocess.run([
-                  "ffmpeg","-y",
-                  "-f","concat","-safe","0",
-                  "-i",str(lst),
-                  "-i",str(audio),
-                  "-vf",vf+",format=yuv420p",
-                  "-c:v","libx264",
-                  "-preset","medium",
-                  "-crf","20",
-                  "-c:a","aac",
-                  "-b:a","192k",
-                  "-shortest",
-                  "-movflags","+faststart",
-                  str(out)
-              ],check=True)
+          def generate_images(
+              prompts,
+              prefix,
+              size
+          ):
 
-          def yt():
-              c=Credentials(
+              results = [None] * len(prompts)
+
+              def one(i, prompt):
+
+                  path = OUT / (
+                      f"{prefix}_{i:02d}.jpg"
+                  )
+
+                  make_image(
+                      prompt,
+                      path,
+                      size
+                  )
+
+                  return i, path
+
+              with ThreadPoolExecutor(
+                  max_workers=4
+              ) as pool:
+
+                  futures = [
+                      pool.submit(
+                          one,
+                          i,
+                          prompt
+                      )
+                      for i, prompt
+                      in enumerate(prompts)
+                  ]
+
+                  for future in as_completed(
+                      futures
+                  ):
+
+                      i, path = future.result()
+
+                      results[i] = path
+
+                      print(
+                          f"Görsel hazır: "
+                          f"{i + 1}/{len(prompts)}"
+                      )
+
+              return results
+
+          def make_video(
+              audio,
+              images,
+              output,
+              vertical=False
+          ):
+
+              total = get_duration(audio)
+
+              per_scene = (
+                  total / len(images)
+              )
+
+              if per_scene < 2:
+                  raise RuntimeError(
+                      "Görsel başına süre çok kısa."
+                  )
+
+              slides = OUT / (
+                  f"{output.stem}_slides.txt"
+              )
+
+              with slides.open(
+                  "w",
+                  encoding="utf-8"
+              ) as f:
+
+                  for image in images:
+
+                      f.write(
+                          f"file '{image.resolve()}'\n"
+                      )
+
+                      f.write(
+                          f"duration {per_scene:.3f}\n"
+                      )
+
+                  f.write(
+                      f"file '{images[-1].resolve()}'\n"
+                  )
+
+              if vertical:
+
+                  vf = (
+                      "scale=1080:1920:"
+                      "force_original_aspect_ratio=increase,"
+                      "crop=1080:1920,"
+                      "format=yuv420p"
+                  )
+
+              else:
+
+                  vf = (
+                      "scale=1280:720:"
+                      "force_original_aspect_ratio=increase,"
+                      "crop=1280:720,"
+                      "format=yuv420p"
+                  )
+
+              subprocess.run(
+                  [
+                      "ffmpeg",
+                      "-y",
+                      "-f",
+                      "concat",
+                      "-safe",
+                      "0",
+                      "-i",
+                      str(slides),
+                      "-i",
+                      str(audio),
+                      "-vf",
+                      vf,
+                      "-r",
+                      "25",
+                      "-c:v",
+                      "libx264",
+                      "-preset",
+                      "medium",
+                      "-crf",
+                      "19",
+                      "-c:a",
+                      "aac",
+                      "-b:a",
+                      "192k",
+                      "-shortest",
+                      "-movflags",
+                      "+faststart",
+                      str(output)
+                  ],
+                  check=True
+              )
+
+          def youtube():
+
+              credentials = Credentials(
                   token=None,
-                  refresh_token=os.environ["YOUTUBE_REFRESH_TOKEN"],
+                  refresh_token=os.environ[
+                      "YOUTUBE_REFRESH_TOKEN"
+                  ],
                   token_uri="https://oauth2.googleapis.com/token",
-                  client_id=os.environ["GOOGLE_CLIENT_ID"],
-                  client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
-                  scopes=["https://www.googleapis.com/auth/youtube.upload"]
+                  client_id=os.environ[
+                      "GOOGLE_CLIENT_ID"
+                  ],
+                  client_secret=os.environ[
+                      "GOOGLE_CLIENT_SECRET"
+                  ],
+                  scopes=[
+                      "https://www.googleapis.com/auth/youtube.upload"
+                  ]
               )
-              return build("youtube","v3",credentials=c)
 
-          def upload(api,file,title,desc,tags,thumb=None):
-              body={
-                  "snippet":{
-                      "title":title[:100],
-                      "description":desc[:5000],
-                      "tags":tags[:30],
-                      "categoryId":"27"
+              return build(
+                  "youtube",
+                  "v3",
+                  credentials=credentials
+              )
+
+          def upload(
+              api,
+              video_file,
+              title,
+              description,
+              tags,
+              thumbnail=None
+          ):
+
+              body = {
+                  "snippet": {
+                      "title": title[:100],
+                      "description": description[:5000],
+                      "tags": tags[:30],
+                      "categoryId": "27"
                   },
-                  "status":{
-                      "privacyStatus":"public",
-                      "selfDeclaredMadeForKids":False,
-                      "containsSyntheticMedia":True
+                  "status": {
+                      "privacyStatus": "public",
+                      "selfDeclaredMadeForKids": False,
+                      "containsSyntheticMedia": True
                   }
               }
 
-              m=MediaFileUpload(
-                  str(file),
+              media = MediaFileUpload(
+                  str(video_file),
                   mimetype="video/mp4",
                   resumable=True,
-                  chunksize=8*1024*1024
+                  chunksize=8 * 1024 * 1024
               )
 
-              r=api.videos().insert(
+              response = api.videos().insert(
                   part="snippet,status",
                   body=body,
-                  media_body=m
+                  media_body=media
               ).execute()
 
-              print("VIDEO BAŞARIYLA YÜKLENDİ:",r["id"])
+              video_id = response["id"]
 
-              if thumb:
+              print(
+                  f"VIDEO BAŞARIYLA YÜKLENDİ: "
+                  f"{video_id}"
+              )
+
+              if thumbnail and thumbnail.exists():
+
+                  thumb_media = MediaFileUpload(
+                      str(thumbnail),
+                      mimetype="image/jpeg"
+                  )
+
                   api.thumbnails().set(
-                      videoId=r["id"],
-                      media_body=MediaFileUpload(
-                          str(thumb),
-                          mimetype="image/jpeg"
-                      )
+                      videoId=video_id,
+                      media_body=thumb_media
                   ).execute()
-                  print("THUMBNAIL YÜKLENDİ")
 
-              return r["id"]
+                  print(
+                      f"THUMBNAIL BAŞARIYLA YÜKLENDİ: "
+                      f"{video_id}"
+                  )
 
-          d=plan()
+              print(
+                  f"Video ID: {video_id}"
+              )
 
-          (W/"metadata.json").write_text(
-              json.dumps(d,ensure_ascii=False,indent=2),
+              return video_id
+
+          # =========================================================
+          # 1. KONU + ARAŞTIRMA + SENARYO
+          # =========================================================
+
+          data = generate_plan()
+
+          (OUT / "metadata.json").write_text(
+              json.dumps(
+                  data,
+                  ensure_ascii=False,
+                  indent=2
+              ),
               encoding="utf-8"
           )
 
-          la=W/"long.mp3"
-          speech(d["narration"],la)
+          # =========================================================
+          # 2. ANA SES
+          # =========================================================
 
-          lv=W/"long.mp4"
-          video(la,d["scenes"],lv)
+          long_audio = OUT / "long_audio.mp3"
 
-          sa=W/"short.mp3"
-          speech(d["short_narration"],sa)
-
-          sv=W/"short.mp4"
-          video(sa,d["short_scenes"],sv,True)
-
-          th=W/"thumbnail.jpg"
-          img(d["thumbnail_prompt"],th,"1536x1024")
-
-          desc=(
-              d["description"].strip()
-              + "\n\nBu video yapay zekâ destekli üretim araçları "
-                "kullanılarak hazırlanmıştır."
-              + "\n\n#GerçeklerinPeşinde #Gizem #Belgesel"
+          tts(
+              data["narration"],
+              long_audio
           )
 
-          api=yt()
+          long_seconds = get_duration(
+              long_audio
+          )
 
+          print(
+              f"Ana ses süresi: "
+              f"{long_seconds:.1f} saniye"
+          )
+
+          if not (
+              MIN_LONG_SECONDS
+              <= long_seconds
+              <= MAX_LONG_SECONDS
+          ):
+
+              raise RuntimeError(
+                  f"ANA VİDEO UZUNLUĞU HATALI: "
+                  f"{long_seconds:.1f} sn. "
+                  f"İzin verilen aralık: "
+                  f"{MIN_LONG_SECONDS}-"
+                  f"{MAX_LONG_SECONDS} sn. "
+                  "Video YouTube'a yüklenmeyecek."
+              )
+
+          # =========================================================
+          # 3. ANA GÖRSELLER
+          # =========================================================
+
+          long_images = generate_images(
+              data["scenes"],
+              "long_scene",
+              "1536x1024"
+          )
+
+          long_video = OUT / "long_video.mp4"
+
+          make_video(
+              long_audio,
+              long_images,
+              long_video,
+              vertical=False
+          )
+
+          final_long_seconds = get_duration(
+              long_video
+          )
+
+          print(
+              f"Final ana video: "
+              f"{final_long_seconds:.1f} saniye"
+          )
+
+          if not (
+              MIN_LONG_SECONDS
+              <= final_long_seconds
+              <= MAX_LONG_SECONDS
+          ):
+
+              raise RuntimeError(
+                  f"FINAL ANA VIDEO UZUNLUĞU HATALI: "
+                  f"{final_long_seconds:.1f} sn"
+              )
+
+          # =========================================================
+          # 4. SHORT
+          # =========================================================
+
+          short_audio = OUT / "short_audio.mp3"
+
+          tts(
+              data["short_narration"],
+              short_audio
+          )
+
+          short_seconds = get_duration(
+              short_audio
+          )
+
+          print(
+              f"Short süresi: "
+              f"{short_seconds:.1f} saniye"
+          )
+
+          if not (
+              35 <= short_seconds <= 75
+          ):
+
+              raise RuntimeError(
+                  f"SHORT UZUNLUĞU HATALI: "
+                  f"{short_seconds:.1f} sn"
+              )
+
+          short_images = generate_images(
+              data["short_scenes"],
+              "short_scene",
+              "1024x1536"
+          )
+
+          short_video = OUT / "short_video.mp4"
+
+          make_video(
+              short_audio,
+              short_images,
+              short_video,
+              vertical=True
+          )
+
+          # =========================================================
+          # 5. THUMBNAIL
+          # =========================================================
+
+          thumbnail = OUT / "thumbnail.jpg"
+
+          make_image(
+              data["thumbnail_prompt"],
+              thumbnail,
+              "1536x1024"
+          )
+
+          # =========================================================
+          # 6. YOUTUBE
+          # =========================================================
+
+          api = youtube()
+
+          description = (
+              data["description"].strip()
+              + "\n\n"
+              "Bu video özgün senaryo, yapay zekâ destekli "
+              "seslendirme ve görseller kullanılarak hazırlanmıştır."
+              "\n\n"
+              "#KayıpHikâyeler #Gizem #Belgesel"
+          )
+
+          # ANA VİDEO
           upload(
               api,
-              lv,
-              d["title"],
-              desc,
-              d["tags"],
-              th
+              long_video,
+              data["title"],
+              description,
+              data["tags"],
+              thumbnail
           )
 
+          # SHORT
           upload(
               api,
-              sv,
-              d["short_title"],
-              desc,
-              d["tags"][:15]
+              short_video,
+              data["short_title"],
+              description,
+              data["tags"][:15],
+              None
           )
 
-          print("AUTOMATION COMPLETED")
+          print(
+              "AUTOMATION COMPLETED"
+          )
           PY
 
           python automation.py
