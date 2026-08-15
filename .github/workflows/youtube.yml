@@ -74,7 +74,7 @@ jobs:
           MIN_LONG_SECONDS = 400
           MAX_LONG_SECONDS = 780
 
-          MIN_WORDS = 900
+          MIN_WORDS = 700
           MAX_WORDS = 1350
 
           PIPER_DIR = OUT / "piper"
