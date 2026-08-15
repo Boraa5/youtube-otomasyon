@@ -96,7 +96,7 @@ jobs:
               "https://huggingface.co/"
               "rhasspy/piper-voices/"
               "resolve/"
-              "refs/pr/25/"
+              "de5443f334324e8e077d79b803b0fb08aff01f2b/"
               "tr/tr_TR/fahrettin/medium/"
           )
 
