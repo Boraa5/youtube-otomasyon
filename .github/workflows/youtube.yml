@@ -358,79 +358,97 @@ jobs:
                   response.output_text
               )
 
+def generate_plan():
 
-          def generate_plan():
+    for attempt in range(5):
 
-              data = ask_plan()
+        print(
+            f"Senaryo oluşturuluyor... "
+            f"Deneme {attempt + 1}/5"
+        )
 
-              wc = word_count(
-                  data.get(
-                      "narration",
-                      ""
-                  )
-              )
+        data = ask_plan()
 
-              short_wc = word_count(
-                  data.get(
-                      "short_narration",
-                      ""
-                  )
-              )
+        wc = word_count(
+            data.get(
+                "narration",
+                ""
+            )
+        )
 
-              if not (
-                  MIN_WORDS
-                  <= wc
-                  <= MAX_WORDS
-              ):
-                  raise RuntimeError(
-                      f"Ana senaryo kelime sayısı "
-                      f"hatalı: {wc}"
-                  )
+        short_wc = word_count(
+            data.get(
+                "short_narration",
+                ""
+            )
+        )
 
-              if not (
-                  100
-                  <= short_wc
-                  <= 220
-              ):
-                  raise RuntimeError(
-                      f"Short senaryo kelime sayısı "
-                      f"hatalı: {short_wc}"
-                  )
+        print(
+            f"Üretilen ana senaryo: {wc} kelime"
+        )
 
-              if len(
-                  data.get(
-                      "scene_queries",
-                      []
-                  )
-              ) != 12:
-                  raise RuntimeError(
-                      "12 ana Pexels sorgusu oluşmadı."
-                  )
+        if (
+            MIN_WORDS
+            <= wc
+            <= MAX_WORDS
+        ):
+            break
 
-              if len(
-                  data.get(
-                      "short_queries",
-                      []
-                  )
-              ) != 6:
-                  raise RuntimeError(
-                      "6 Short Pexels sorgusu oluşmadı."
-                  )
+        print(
+            f"Senaryo kısa: {wc} kelime. "
+            f"Yeniden oluşturuluyor..."
+        )
 
-              if not data.get(
-                  "thumbnail_query"
-              ):
-                  raise RuntimeError(
-                      "Thumbnail sorgusu yok."
-                  )
+    else:
+        raise RuntimeError(
+            f"5 denemede 1800-2000 kelimelik "
+            f"senaryo üretilemedi."
+        )
 
-              print(
-                  f"Plan OK: "
-                  f"{wc} ana kelime / "
-                  f"{short_wc} short kelime"
-              )
+    if not (
+        100
+        <= short_wc
+        <= 220
+    ):
+        raise RuntimeError(
+            f"Short senaryo kelime sayısı "
+            f"hatalı: {short_wc}"
+        )
 
-              return data
+    if len(
+        data.get(
+            "scene_queries",
+            []
+        )
+    ) != 12:
+        raise RuntimeError(
+            "12 ana Pexels sorgusu oluşmadı."
+        )
+
+    if len(
+        data.get(
+            "short_queries",
+            []
+        )
+    ) != 6:
+        raise RuntimeError(
+            "6 Short Pexels sorgusu oluşmadı."
+        )
+
+    if not data.get(
+        "thumbnail_query"
+    ):
+        raise RuntimeError(
+            "Thumbnail sorgusu yok."
+        )
+
+    print(
+        f"Plan OK: "
+        f"{wc} ana kelime / "
+        f"{short_wc} short kelime"
+    )
+
+    return data
 
 
           # =========================================================
