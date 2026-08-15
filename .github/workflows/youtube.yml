@@ -71,7 +71,7 @@ jobs:
 
           PEXELS_KEY = os.environ["PEXELS_API_KEY"]
 
-          MIN_LONG_SECONDS = 450
+          MIN_LONG_SECONDS = 400
           MAX_LONG_SECONDS = 780
 
           MIN_WORDS = 900
