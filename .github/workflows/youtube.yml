@@ -74,8 +74,8 @@ jobs:
           MIN_LONG_SECONDS = 400
           MAX_LONG_SECONDS = 780
 
-          MIN_WORDS = 700
-          MAX_WORDS = 1350
+          MIN_WORDS = 1800
+          MAX_WORDS = 2000
 
           PIPER_DIR = OUT / "piper"
           PIPER_DIR.mkdir(exist_ok=True)
@@ -273,8 +273,9 @@ jobs:
 
           ANA VİDEO:
           - 8-12 dakika hedefle.
-          - - MUTLAKA 1100-1350 Türkçe kelime yaz.
-          - 1100 kelimenin ALTINA KESİNLİKLE İNME.
+     
+          - MUTLAKA 1800-2000 Türkçe kelime yaz.
+          - 1800 kelimenin ALTINA KESİNLİKLE İNME.
           - İlk 15 saniye çok güçlü merak kancası olsun.
           - Kanca.
           - Arka plan.
