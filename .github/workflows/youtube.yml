@@ -17,9 +17,9 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg curl
           python -m pip install --upgrade pip
-          pip install -U openai google-api-python-client google-auth
+          pip install -U openai google-api-python-client google-auth requests piper-tts==1.4.2
 
       - name: Check secrets
         env:
@@ -27,11 +27,13 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
         run: |
           test -n "$OPENAI_API_KEY" || (echo "OPENAI_API_KEY missing" && exit 1)
           test -n "$GOOGLE_CLIENT_ID" || (echo "GOOGLE_CLIENT_ID missing" && exit 1)
           test -n "$GOOGLE_CLIENT_SECRET" || (echo "GOOGLE_CLIENT_SECRET missing" && exit 1)
           test -n "$YOUTUBE_REFRESH_TOKEN" || (echo "YOUTUBE_REFRESH_TOKEN missing" && exit 1)
+          test -n "$PEXELS_API_KEY" || (echo "PEXELS_API_KEY missing" && exit 1)
           echo "Secrets OK"
 
       - name: Run YouTube automation
@@ -40,20 +42,25 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
         run: |
           cat > automation.py <<'PY'
           import os
           import json
-          import base64
           import re
           import subprocess
           from pathlib import Path
-          from concurrent.futures import ThreadPoolExecutor, as_completed
 
+          import requests
           from openai import OpenAI
           from google.oauth2.credentials import Credentials
           from googleapiclient.discovery import build
           from googleapiclient.http import MediaFileUpload
+
+
+          # =========================================================
+          # AYARLAR
+          # =========================================================
 
           OUT = Path("work")
           OUT.mkdir(exist_ok=True)
@@ -62,10 +69,49 @@ jobs:
               api_key=os.environ["OPENAI_API_KEY"]
           )
 
+          PEXELS_KEY = os.environ["PEXELS_API_KEY"]
+
           MIN_LONG_SECONDS = 480
           MAX_LONG_SECONDS = 780
+
           MIN_WORDS = 1100
           MAX_WORDS = 1350
+
+          PIPER_DIR = OUT / "piper"
+          PIPER_DIR.mkdir(exist_ok=True)
+
+          PIPER_MODEL = (
+              PIPER_DIR /
+              "tr_TR-fahrettin-medium.onnx"
+          )
+
+          PIPER_CONFIG = (
+              PIPER_DIR /
+              "tr_TR-fahrettin-medium.onnx.json"
+          )
+
+          # Sabit commit:
+          # CC0 lisanslı fahrettin Türkçe model.
+          PIPER_BASE = (
+              "https://huggingface.co/"
+              "rhasspy/piper-voices/"
+              "resolve/"
+              "refs/pr/25/"
+              "tr/tr_TR/fahrettin/medium/"
+          )
+
+
+          # =========================================================
+          # GENEL YARDIMCI FONKSİYONLAR
+          # =========================================================
+
+          def run_command(command):
+              print("CMD:", " ".join(map(str, command)))
+
+              subprocess.run(
+                  command,
+                  check=True
+              )
 
 
           def clean_json(text):
@@ -89,7 +135,7 @@ jobs:
 
               if start < 0 or end <= start:
                   raise ValueError(
-                      "JSON bulunamadı"
+                      "JSON bulunamadı."
                   )
 
               return json.loads(
@@ -106,369 +152,8 @@ jobs:
               )
 
 
-          def ask_plan():
-
-              prompt = r"""
-          Türkçe YouTube belgesel kanalı "Kayıp Hikâyeler" için TEK bir bölüm hazırla.
-
-          Konu gizem, bilim, tarih, arkeoloji, uzay, açıklanamayan olaylar veya
-          şaşırtıcı ama doğrulanabilir gerçeklerden biri olsun.
-
-          Evergreen konu seç.
-
-          Siyasi propaganda, özel kişiler hakkında suçlama, tıbbi tavsiye ve
-          uydurma paranormal iddialar kullanma.
-
-          Web araması yap.
-
-          Birincil kaynakları, üniversiteleri, müzeleri, devlet kurumlarını ve
-          güvenilir bilim/haber kaynaklarını tercih et.
-
-          Kaynaklarda olmayan tarih, sayı, alıntı veya olay uydurma.
-
-          Tartışmalı bir iddia varsa bunun tartışmalı olduğunu belirt.
-
-          ANA VİDEO:
-
-          - 8-12 dakika hedefle.
-          - 1100-1350 Türkçe kelime yaz.
-          - Ortalama konuşma hızında yaklaşık 9-11 dakikalık anlatım hedefle.
-
-          - İlk 15 saniye çok güçlü bir merak kancası olsun.
-          - Akış:
-          - kanca
-          - arka plan
-          - olay ve kanıtların kronolojisi
-          - alternatif açıklamalar
-          - en güçlü bulgular
-          - şaşırtıcı ama dengeli sonuç
-          - kısa kapanış
-          - Konuşma dili doğal Türkçe olsun.
-          - Narration içinde başlık veya bölüm başlığı bulunmasın.
-          - Kaynak listesi narration içine koyma.
-          - Her paragraf yeni bilgi taşısın.
-
-          SHORT:
-
-          - 40-60 saniye.
-          - Ana videodan bağımsız anlaşılmalı.
-          - Kendi güçlü kancası olsun.
-          - Kendi kapanışı olsun.
-          - Ana videodan basitçe kesilmiş bir bölüm olmasın.
-
-          GÖRSELLER:
-
-          - Ana video için 12 adet 16:9 sinematik belgesel görsel promptu.
-          - Short için 6 adet 9:16 prompt.
-          - Gerçekçi ve sinematik belgesel görünümü.
-          - Tutarlı dönem ve ışık.
-          - Yazı olmasın.
-          - Logo olmasın.
-          - Watermark olmasın.
-          - Sahte belge olmasın.
-          - Sahte ekran görüntüsü olmasın.
-          - Tarihi kişiler gerekiyorsa birebir fotoğraf iddiası yerine
-            illüstratif belgesel canlandırması tarif et.
-
-          THUMBNAIL:
-
-          - 16:9.
-          - Tek güçlü merak unsuru.
-          - Sade kompozisyon.
-          - Yazı bulunmasın.
-
-          SADECE geçerli JSON döndür:
-
-          {
-            "title": "...",
-            "description": "...",
-            "tags": ["10-20 doğal Türkçe etiket"],
-            "narration": "...",
-            "short_title": "...",
-            "short_narration": "...",
-            "scenes": ["12 prompt"],
-            "short_scenes": ["6 prompt"],
-            "thumbnail_prompt": "..."
-          }
-          """
-
-              response = client.responses.create(
-                  model="gpt-5.1",
-                  tools=[
-                      {"type": "web_search"}
-                  ],
-                  input=prompt,
-                  max_output_tokens=12000
-              )
-
-              return clean_json(
-                  response.output_text
-              )
-
-
-          def generate_plan():
-
-              last = {}
-
-              for attempt in range(3):
-
-                  data = ask_plan()
-                  last = data
-
-                  wc = word_count(
-                      data.get(
-                          "narration",
-                          ""
-                      )
-                  )
-
-                  sc = word_count(
-                      data.get(
-                          "short_narration",
-                          ""
-                      )
-                  )
-
-                  if (
-                      MIN_WORDS <= wc <= MAX_WORDS
-                      and 45 <= sc <= 180
-                      and len(
-                          data.get(
-                              "scenes",
-                              []
-                          )
-                      ) == 12
-                      and len(
-                          data.get(
-                              "short_scenes",
-                              []
-                          )
-                      ) == 6
-                  ):
-
-                      print(
-                          f"Plan OK: "
-                          f"{wc} ana kelime / "
-                          f"{sc} short kelime"
-                      )
-
-                      return data
-
-                  print(
-                      f"Plan reddedildi: "
-                      f"{wc} ana kelime, "
-                      f"{sc} short kelime. "
-                      f"Deneme {attempt + 1}/3"
-                  )
-
-              raise RuntimeError(
-                  "Model hedef uzunlukta "
-                  "senaryo üretmedi. "
-                  f"Son ana kelime sayısı: "
-                  f"{word_count(last.get('narration', ''))}"
-              )
-
-
-          def tts(text, output):
-
-              paragraphs = [
-                  x.strip()
-                  for x in re.split(
-                      r"\n+",
-                      text
-                  )
-                  if x.strip()
-              ]
-
-              chunks = []
-              current = ""
-
-              for paragraph in paragraphs:
-
-                  while len(paragraph) > 2800:
-
-                      cut = paragraph.rfind(
-                          " ",
-                          0,
-                          2800
-                      )
-
-                      if cut < 500:
-                          cut = 2800
-
-                      chunks.append(
-                          paragraph[:cut].strip()
-                      )
-
-                      paragraph = paragraph[
-                          cut:
-                      ].strip()
-
-                  if (
-                      current
-                      and len(current)
-                      + len(paragraph)
-                      + 1 > 3200
-                  ):
-
-                      chunks.append(current)
-                      current = paragraph
-
-                  else:
-
-                      current += (
-                          " "
-                          if current
-                          else ""
-                      ) + paragraph
-
-              if current:
-                  chunks.append(current)
-
-              parts = []
-
-              for i, chunk in enumerate(chunks):
-
-                  path = OUT / (
-                      f"tts_{output.stem}_{i}.mp3"
-                  )
-
-                  audio = client.audio.speech.create(
-                      model="gpt-4o-mini-tts",
-                      voice="coral",
-                      input=chunk,
-                      instructions=(
-                          "Türkçe belgesel anlatıcısı "
-                          "gibi konuş. Doğal, ciddi, "
-                          "merak uyandıran ve akıcı ol. "
-                          "Kelime sonlarını net telaffuz et. "
-                          "Aşırı dramatik, robotik veya "
-                          "reklam gibi konuşma."
-                      ),
-                      response_format="mp3"
-                  )
-
-                  audio.write_to_file(
-                      str(path)
-                  )
-
-                  if (
-                      not path.exists()
-                      or path.stat().st_size < 1000
-                  ):
-                      raise RuntimeError(
-                          f"TTS dosyası oluşturulamadı: {path}"
-                      )
-
-                  parts.append(path)
-
-              if not parts:
-                  raise RuntimeError(
-                      "TTS hiç ses parçası üretmedi."
-                  )
-
-              concat = OUT / (
-                  f"{output.stem}_audio.txt"
-              )
-
-              valid_parts = []
-
-              for p in parts:
-
-                  try:
-
-                      if (
-                          not p.exists()
-                          or p.stat().st_size < 1000
-                      ):
-                          print(
-                              "UYARI: Geçersiz ses "
-                              f"parçası atlandı: {p}"
-                          )
-                          continue
-
-                      probe = subprocess.run(
-                          [
-                              "ffprobe",
-                              "-v",
-                              "error",
-                              "-show_entries",
-                              "format=duration",
-                              "-of",
-                              "default="
-                              "noprint_wrappers=1:"
-                              "nokey=1",
-                              str(p)
-                          ],
-                          check=True,
-                          stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE,
-                          text=True
-                      )
-
-                      if not probe.stdout.strip():
-                          raise RuntimeError(
-                              "ffprobe süre döndürmedi."
-                          )
-
-                      valid_parts.append(p)
-
-                  except Exception as e:
-
-                      print(
-                          "UYARI: Ses parçası "
-                          f"kullanılamadı: {p} - {e}"
-                      )
-
-              if not valid_parts:
-                  raise RuntimeError(
-                      "Geçerli hiçbir TTS ses "
-                      "parçası oluşturulamadı."
-                  )
-
-              with concat.open(
-                  "w",
-                  encoding="utf-8"
-              ) as f:
-
-                  for p in valid_parts:
-                      f.write(
-                          f"file '{p.resolve()}'\n"
-                      )
-
-              subprocess.run(
-                  [
-                      "ffmpeg",
-                      "-y",
-                      "-f",
-                      "concat",
-                      "-safe",
-                      "0",
-                      "-i",
-                      str(concat),
-                      "-vn",
-                      "-c:a",
-                      "libmp3lame",
-                      "-b:a",
-                      "192k",
-                      str(output)
-                  ],
-                  check=True
-              )
-
-              if (
-                  not output.exists()
-                  or output.stat().st_size < 1000
-              ):
-                  raise RuntimeError(
-                      "Birleştirilmiş ses "
-                      "oluşturulamadı."
-                  )
-
-
           def get_duration(path):
-
-              out = subprocess.check_output(
+              result = subprocess.check_output(
                   [
                       "ffprobe",
                       "-v",
@@ -485,97 +170,589 @@ jobs:
               )
 
               return float(
-                  out.strip()
+                  result.strip()
               )
 
 
-          def make_image(
-              prompt,
-              output,
-              size
-          ):
+          # =========================================================
+          # PIPER TÜRKÇE MODELİ
+          # =========================================================
 
-              result = client.images.generate(
-                  model="gpt-image-1",
-                  prompt=(
-                      prompt
-                      + "\nNo text. No logo. "
-                      "No watermark. "
-                      "High-quality cinematic "
-                      "documentary still."
-                  ),
-                  size=size,
-                  quality="medium",
-                  output_format="jpeg"
+          def install_piper_voice():
+
+              if (
+                  PIPER_MODEL.exists()
+                  and PIPER_CONFIG.exists()
+              ):
+                  print("Piper modeli zaten mevcut.")
+                  return
+
+              print("Piper Türkçe modeli indiriliyor...")
+
+              model_url = (
+                  PIPER_BASE
+                  + "tr_TR-fahrettin-medium.onnx"
               )
 
-              output.write_bytes(
-                  base64.b64decode(
-                      result.data[0].b64_json
-                  )
+              config_url = (
+                  PIPER_BASE
+                  + "tr_TR-fahrettin-medium.onnx.json"
               )
 
+              with requests.get(
+                  model_url,
+                  stream=True,
+                  timeout=120
+              ) as response:
 
-          def generate_images(
-              prompts,
-              prefix,
-              size
-          ):
+                  response.raise_for_status()
 
-              results = [None] * len(prompts)
+                  with PIPER_MODEL.open("wb") as f:
 
-              def one(i, prompt):
+                      for chunk in response.iter_content(
+                          chunk_size=1024 * 1024
+                      ):
+                          if chunk:
+                              f.write(chunk)
 
-                  path = OUT / (
-                      f"{prefix}_{i:02d}.jpg"
+              with requests.get(
+                  config_url,
+                  timeout=60
+              ) as response:
+
+                  response.raise_for_status()
+
+                  PIPER_CONFIG.write_bytes(
+                      response.content
                   )
 
-                  make_image(
-                      prompt,
-                      path,
-                      size
-                  )
-
-                  return i, path
-
-              with ThreadPoolExecutor(
-                  max_workers=1
-              ) as pool:
-
-                  futures = [
-                      pool.submit(
-                          one,
-                          i,
-                          prompt
-                      )
-                      for i, prompt
-                      in enumerate(prompts)
-                  ]
-
-                  for future in as_completed(
-                      futures
-                  ):
-
-                      i, path = future.result()
-
-                      results[i] = path
-
-                      print(
-                          f"Görsel hazır: "
-                          f"{i + 1}/{len(prompts)}"
-                      )
-
-              if any(
-                  p is None
-                  for p in results
+              if (
+                  not PIPER_MODEL.exists()
+                  or PIPER_MODEL.stat().st_size < 10_000_000
               ):
                   raise RuntimeError(
-                      "Bazı görseller "
-                      "oluşturulamadı."
+                      "Piper modeli düzgün indirilemedi."
                   )
 
-              return results
+              if (
+                  not PIPER_CONFIG.exists()
+                  or PIPER_CONFIG.stat().st_size < 500
+              ):
+                  raise RuntimeError(
+                      "Piper config düzgün indirilemedi."
+                  )
 
+              print("Piper Türkçe modeli hazır.")
+
+
+          # =========================================================
+          # KONU + ARAŞTIRMA + SENARYO
+          # =========================================================
+
+          def ask_plan():
+
+              prompt = r"""
+          Türkçe YouTube belgesel kanalı "Kayıp Hikâyeler" için TEK bir bölüm hazırla.
+
+          Konu gizem, bilim, tarih, arkeoloji, uzay, açıklanamayan olaylar
+          veya şaşırtıcı ama doğrulanabilir gerçeklerden biri olsun.
+
+          Evergreen konu seç.
+
+          Siyasi propaganda, özel kişiler hakkında suçlama, tıbbi tavsiye
+          ve uydurma paranormal iddialar kullanma.
+
+          Web araması yap.
+
+          Birincil kaynakları, üniversiteleri, müzeleri, devlet kurumlarını
+          ve güvenilir bilim/haber kaynaklarını tercih et.
+
+          Kaynaklarda olmayan tarih, sayı, alıntı veya olay uydurma.
+
+          Tartışmalı bir iddia varsa tartışmalı olduğunu açıkça belirt.
+
+          ANA VİDEO:
+          - 8-12 dakika hedefle.
+          - 1100-1350 Türkçe kelime yaz.
+          - İlk 15 saniye çok güçlü merak kancası olsun.
+          - Kanca.
+          - Arka plan.
+          - Olay ve kanıtların kronolojisi.
+          - Alternatif açıklamalar.
+          - En güçlü bulgular.
+          - Şaşırtıcı ama dengeli sonuç.
+          - Kısa kapanış.
+          - Doğal konuşma dili.
+          - Narration içinde başlık kullanma.
+          - Kaynak listesini narration içine koyma.
+
+          SHORT:
+          - 40-60 saniye.
+          - Bağımsız anlaşılmalı.
+          - Güçlü kanca.
+          - Kendi kapanışı.
+          - Ana videodan basit kesit olmasın.
+
+          GÖRSEL ARAMALARI:
+          Ana video için 12 adet İngilizce Pexels arama sorgusu üret.
+          Her sorgu 2-6 kelime olsun.
+          Soyut ve aşırı sinematik ifadeler yerine Pexels'te bulunabilecek
+          gerçek nesne, yer, kişi, olay veya ortamları tarif et.
+
+          Short için 6 adet İngilizce Pexels arama sorgusu üret.
+
+          Thumbnail için 1 adet İngilizce Pexels arama sorgusu üret.
+
+          SADECE geçerli JSON döndür:
+
+          {
+            "title": "...",
+            "description": "...",
+            "tags": ["10-20 doğal Türkçe etiket"],
+            "narration": "...",
+            "short_title": "...",
+            "short_narration": "...",
+            "scene_queries": [
+              "english search query 1",
+              "english search query 2",
+              "english search query 3",
+              "english search query 4",
+              "english search query 5",
+              "english search query 6",
+              "english search query 7",
+              "english search query 8",
+              "english search query 9",
+              "english search query 10",
+              "english search query 11",
+              "english search query 12"
+            ],
+            "short_queries": [
+              "english search query 1",
+              "english search query 2",
+              "english search query 3",
+              "english search query 4",
+              "english search query 5",
+              "english search query 6"
+            ],
+            "thumbnail_query": "english thumbnail search query"
+          }
+          """
+
+              response = client.responses.create(
+                  model="gpt-5.4-mini",
+                  tools=[
+                      {
+                          "type": "web_search"
+                      }
+                  ],
+                  input=prompt,
+                  reasoning={
+                      "effort": "low"
+                  },
+                  max_output_tokens=10000
+              )
+
+              return clean_json(
+                  response.output_text
+              )
+
+
+          def generate_plan():
+
+              data = ask_plan()
+
+              wc = word_count(
+                  data.get(
+                      "narration",
+                      ""
+                  )
+              )
+
+              short_wc = word_count(
+                  data.get(
+                      "short_narration",
+                      ""
+                  )
+              )
+
+              if not (
+                  MIN_WORDS
+                  <= wc
+                  <= MAX_WORDS
+              ):
+                  raise RuntimeError(
+                      f"Ana senaryo kelime sayısı "
+                      f"hatalı: {wc}"
+                  )
+
+              if not (
+                  100
+                  <= short_wc
+                  <= 220
+              ):
+                  raise RuntimeError(
+                      f"Short senaryo kelime sayısı "
+                      f"hatalı: {short_wc}"
+                  )
+
+              if len(
+                  data.get(
+                      "scene_queries",
+                      []
+                  )
+              ) != 12:
+                  raise RuntimeError(
+                      "12 ana Pexels sorgusu oluşmadı."
+                  )
+
+              if len(
+                  data.get(
+                      "short_queries",
+                      []
+                  )
+              ) != 6:
+                  raise RuntimeError(
+                      "6 Short Pexels sorgusu oluşmadı."
+                  )
+
+              if not data.get(
+                  "thumbnail_query"
+              ):
+                  raise RuntimeError(
+                      "Thumbnail sorgusu yok."
+                  )
+
+              print(
+                  f"Plan OK: "
+                  f"{wc} ana kelime / "
+                  f"{short_wc} short kelime"
+              )
+
+              return data
+
+
+          # =========================================================
+          # PEXELS
+          # =========================================================
+
+          def pexels_search(
+              query,
+              orientation="landscape"
+          ):
+
+              query = re.sub(
+                  r"[^A-Za-z0-9À-ÿ\s-]",
+                  " ",
+                  str(query)
+              )
+
+              query = re.sub(
+                  r"\s+",
+                  " ",
+                  query
+              ).strip()
+
+              if not query:
+                  query = "documentary"
+
+              query = query[:100]
+
+              response = requests.get(
+                  "https://api.pexels.com/v1/search",
+                  headers={
+                      "Authorization": PEXELS_KEY
+                  },
+                  params={
+                      "query": query,
+                      "orientation": orientation,
+                      "per_page": 15,
+                      "page": 1
+                  },
+                  timeout=30
+              )
+
+              response.raise_for_status()
+
+              photos = response.json().get(
+                  "photos",
+                  []
+              )
+
+              if not photos:
+                  raise RuntimeError(
+                      f"Pexels sonuç bulamadı: {query}"
+                  )
+
+              return photos
+
+
+          def download_pexels_image(
+              query,
+              output,
+              orientation,
+              used_ids
+          ):
+
+              photos = pexels_search(
+                  query,
+                  orientation
+              )
+
+              selected = None
+
+              for photo in photos:
+
+                  if photo["id"] not in used_ids:
+                      selected = photo
+                      break
+
+              if selected is None:
+                  selected = photos[0]
+
+              used_ids.add(
+                  selected["id"]
+              )
+
+              src = selected["src"]
+
+              if orientation == "portrait":
+                  image_url = src.get(
+                      "portrait"
+                  ) or src.get(
+                      "large2x"
+                  )
+              else:
+                  image_url = src.get(
+                      "landscape"
+                  ) or src.get(
+                      "large2x"
+                  )
+
+              if not image_url:
+                  image_url = src["original"]
+
+              image = requests.get(
+                  image_url,
+                  timeout=60
+              )
+
+              image.raise_for_status()
+
+              output.write_bytes(
+                  image.content
+              )
+
+              return {
+                  "id": selected["id"],
+                  "url": selected["url"],
+                  "photographer": selected.get(
+                      "photographer",
+                      ""
+                  ),
+                  "photographer_url": selected.get(
+                      "photographer_url",
+                      ""
+                  ),
+                  "query": query
+              }
+
+
+          def generate_pexels_images(
+              queries,
+              prefix,
+              orientation
+          ):
+
+              images = []
+              credits = []
+              used_ids = set()
+
+              for index, query in enumerate(
+                  queries
+              ):
+
+                  output = OUT / (
+                      f"{prefix}_{index + 1:02d}.jpg"
+                  )
+
+                  credit = download_pexels_image(
+                      query,
+                      output,
+                      orientation,
+                      used_ids
+                  )
+
+                  images.append(output)
+                  credits.append(credit)
+
+                  print(
+                      f"Pexels görsel hazır: "
+                      f"{index + 1}/{len(queries)}"
+                  )
+
+              return images, credits
+
+
+          # =========================================================
+          # PIPER TTS
+          # =========================================================
+
+          def piper_tts(
+              text,
+              output
+          ):
+
+              chunks = []
+
+              paragraphs = [
+                  x.strip()
+                  for x in re.split(
+                      r"\n+",
+                      text
+                  )
+                  if x.strip()
+              ]
+
+              current = ""
+
+              for paragraph in paragraphs:
+
+                  while len(paragraph) > 2500:
+
+                      cut = paragraph.rfind(
+                          " ",
+                          0,
+                          2500
+                      )
+
+                      if cut < 500:
+                          cut = 2500
+
+                      chunks.append(
+                          paragraph[:cut].strip()
+                      )
+
+                      paragraph = paragraph[
+                          cut:
+                      ].strip()
+
+                  if (
+                      current
+                      and len(current)
+                      + len(paragraph)
+                      + 1 > 2800
+                  ):
+                      chunks.append(current)
+                      current = paragraph
+                  else:
+                      current += (
+                          " "
+                          if current
+                          else ""
+                      ) + paragraph
+
+              if current:
+                  chunks.append(current)
+
+              if not chunks:
+                  raise RuntimeError(
+                      "TTS için metin yok."
+                  )
+
+              parts = []
+
+              for index, chunk in enumerate(
+                  chunks
+              ):
+
+                  part = OUT / (
+                      f"piper_{output.stem}_"
+                      f"{index:02d}.wav"
+                  )
+
+                  run_command(
+                      [
+                          "piper",
+                          "--model",
+                          str(PIPER_MODEL),
+                          "--output_file",
+                          str(part),
+                          "--sentence_silence",
+                          "0.18",
+                          "--length_scale",
+                          "1.0",
+                          "--noise_scale",
+                          "0.667",
+                          "--noise_w",
+                          "0.8",
+                          "--",
+                          chunk
+                      ]
+                  )
+
+                  if (
+                      not part.exists()
+                      or part.stat().st_size < 1000
+                  ):
+                      raise RuntimeError(
+                          f"Piper ses oluşturamadı: "
+                          f"{part}"
+                      )
+
+                  parts.append(part)
+
+              concat = OUT / (
+                  f"{output.stem}_concat.txt"
+              )
+
+              with concat.open(
+                  "w",
+                  encoding="utf-8"
+              ) as f:
+
+                  for part in parts:
+                      f.write(
+                          "file '"
+                          + str(
+                              part.resolve()
+                          ).replace(
+                              "'",
+                              "'\\''"
+                          )
+                          + "'\n"
+                      )
+
+              run_command(
+                  [
+                      "ffmpeg",
+                      "-y",
+                      "-f",
+                      "concat",
+                      "-safe",
+                      "0",
+                      "-i",
+                      str(concat),
+                      "-vn",
+                      "-c:a",
+                      "libmp3lame",
+                      "-b:a",
+                      "160k",
+                      str(output)
+                  ]
+              )
+
+              if (
+                  not output.exists()
+                  or output.stat().st_size < 1000
+              ):
+                  raise RuntimeError(
+                      "Piper ses dosyası oluşmadı."
+                  )
+
+
+          # =========================================================
+          # VİDEO
+          # =========================================================
 
           def make_video(
               audio,
@@ -614,7 +791,14 @@ jobs:
                   for image in images:
 
                       f.write(
-                          f"file '{image.resolve()}'\n"
+                          "file '"
+                          + str(
+                              image.resolve()
+                          ).replace(
+                              "'",
+                              "'\\''"
+                          )
+                          + "'\n"
                       )
 
                       f.write(
@@ -623,8 +807,14 @@ jobs:
                       )
 
                   f.write(
-                      f"file "
-                      f"'{images[-1].resolve()}'\n"
+                      "file '"
+                      + str(
+                          images[-1].resolve()
+                      ).replace(
+                          "'",
+                          "'\\''"
+                      )
+                      + "'\n"
                   )
 
               if vertical:
@@ -647,7 +837,7 @@ jobs:
                       "format=yuv420p"
                   )
 
-              subprocess.run(
+              run_command(
                   [
                       "ffmpeg",
                       "-y",
@@ -668,19 +858,30 @@ jobs:
                       "-preset",
                       "medium",
                       "-crf",
-                      "19",
+                      "21",
                       "-c:a",
                       "aac",
                       "-b:a",
-                      "192k",
+                      "160k",
                       "-shortest",
                       "-movflags",
                       "+faststart",
                       str(output)
-                  ],
-                  check=True
+                  ]
               )
 
+              if (
+                  not output.exists()
+                  or output.stat().st_size < 10000
+              ):
+                  raise RuntimeError(
+                      f"Video oluşturulamadı: {output}"
+                  )
+
+
+          # =========================================================
+          # YOUTUBE
+          # =========================================================
 
           def youtube():
 
@@ -750,8 +951,8 @@ jobs:
               video_id = response["id"]
 
               print(
-                  f"VIDEO BAŞARIYLA YÜKLENDİ: "
-                  f"{video_id}"
+                  "VIDEO BAŞARIYLA YÜKLENDİ:",
+                  video_id
               )
 
               if (
@@ -770,36 +971,36 @@ jobs:
                   ).execute()
 
                   print(
-                      "THUMBNAIL BAŞARIYLA YÜKLENDİ: "
-                      f"{video_id}"
+                      "THUMBNAIL BAŞARIYLA YÜKLENDİ:",
+                      video_id
                   )
 
               return video_id
 
 
           # =========================================================
-          # 1. KONU + ARAŞTIRMA + SENARYO
+          # ANA İŞLEM
           # =========================================================
+
+          print("=" * 60)
+          print("MALİYET ODAKLI YOUTUBE OTOMASYONU BAŞLIYOR")
+          print("=" * 60)
+
+          install_piper_voice()
+
+          # ---------------------------------------------------------
+          # 1. PLAN / ARAŞTIRMA / SENARYO
+          # ---------------------------------------------------------
 
           data = generate_plan()
 
-          (OUT / "metadata.json").write_text(
-              json.dumps(
-                  data,
-                  ensure_ascii=False,
-                  indent=2
-              ),
-              encoding="utf-8"
-          )
-
-
-          # =========================================================
-          # 2. ANA SES
-          # =========================================================
+          # ---------------------------------------------------------
+          # 2. ANA SES - ÜCRETSİZ PIPER
+          # ---------------------------------------------------------
 
           long_audio = OUT / "long_audio.mp3"
 
-          tts(
+          piper_tts(
               data["narration"],
               long_audio
           )
@@ -820,22 +1021,20 @@ jobs:
           ):
 
               raise RuntimeError(
-                  f"ANA VİDEO UZUNLUĞU HATALI: "
-                  f"{long_seconds:.1f} sn. "
-                  f"İzin verilen aralık: "
-                  f"{MIN_LONG_SECONDS}-"
-                  f"{MAX_LONG_SECONDS} sn."
+                  "Ana video ses süresi hatalı: "
+                  f"{long_seconds:.1f} saniye"
               )
 
+          # ---------------------------------------------------------
+          # 3. ANA GÖRSELLER - PEXELS
+          # ---------------------------------------------------------
 
-          # =========================================================
-          # 3. ANA GÖRSELLER
-          # =========================================================
-
-          long_images = generate_images(
-              data["scenes"],
-              "long_scene",
-              "1536x1024"
+          long_images, long_credits = (
+              generate_pexels_images(
+                  data["scene_queries"],
+                  "long_scene",
+                  "landscape"
+              )
           )
 
           long_video = OUT / "long_video.mp4"
@@ -847,34 +1046,13 @@ jobs:
               vertical=False
           )
 
-          final_long_seconds = get_duration(
-              long_video
-          )
-
-          print(
-              f"Final ana video: "
-              f"{final_long_seconds:.1f} saniye"
-          )
-
-          if not (
-              MIN_LONG_SECONDS
-              <= final_long_seconds
-              <= MAX_LONG_SECONDS
-          ):
-
-              raise RuntimeError(
-                  f"FINAL ANA VIDEO UZUNLUĞU HATALI: "
-                  f"{final_long_seconds:.1f} sn"
-              )
-
-
-          # =========================================================
-          # 4. SHORT
-          # =========================================================
+          # ---------------------------------------------------------
+          # 4. SHORT SES - ÜCRETSİZ PIPER
+          # ---------------------------------------------------------
 
           short_audio = OUT / "short_audio.mp3"
 
-          tts(
+          piper_tts(
               data["short_narration"],
               short_audio
           )
@@ -895,14 +1073,20 @@ jobs:
           ):
 
               raise RuntimeError(
-                  f"SHORT UZUNLUĞU HATALI: "
-                  f"{short_seconds:.1f} sn"
+                  "Short ses süresi hatalı: "
+                  f"{short_seconds:.1f} saniye"
               )
 
-          short_images = generate_images(
-              data["short_scenes"],
-              "short_scene",
-              "1024x1536"
+          # ---------------------------------------------------------
+          # 5. SHORT GÖRSELLER - PEXELS
+          # ---------------------------------------------------------
+
+          short_images, short_credits = (
+              generate_pexels_images(
+                  data["short_queries"],
+                  "short_scene",
+                  "portrait"
+              )
           )
 
           short_video = OUT / "short_video.mp4"
@@ -914,38 +1098,108 @@ jobs:
               vertical=True
           )
 
-
-          # =========================================================
-          # 5. THUMBNAIL
-          # =========================================================
+          # ---------------------------------------------------------
+          # 6. THUMBNAIL - PEXELS
+          # ---------------------------------------------------------
 
           thumbnail = OUT / "thumbnail.jpg"
 
-          make_image(
-              data["thumbnail_prompt"],
-              thumbnail,
-              "1536x1024"
+          thumb_credit = (
+              download_pexels_image(
+                  data["thumbnail_query"],
+                  thumbnail,
+                  "landscape",
+                  set()
+              )
           )
 
+          # ---------------------------------------------------------
+          # 7. PEXELS KREDİLERİ
+          # ---------------------------------------------------------
 
-          # =========================================================
-          # 6. YOUTUBE
-          # =========================================================
+          all_credits = (
+              long_credits
+              + short_credits
+              + [thumb_credit]
+          )
 
-          api = youtube()
+          credit_lines = [
+              "\nPexels kaynakları:"
+          ]
+
+          credit_lines.append(
+              "Photos provided by Pexels"
+          )
+
+          seen = set()
+
+          for credit in all_credits:
+
+              key = credit["id"]
+
+              if key in seen:
+                  continue
+
+              seen.add(key)
+
+              photographer = (
+                  credit["photographer"]
+                  or "Pexels photographer"
+              )
+
+              url = credit["url"]
+
+              credit_lines.append(
+                  f"Photo by {photographer} "
+                  f"on Pexels: {url}"
+              )
+
+          pexels_credits = "\n".join(
+              credit_lines
+          )
 
           description = (
               data["description"].strip()
               + "\n\n"
-              "Bu video özgün senaryo, yapay zekâ "
-              "destekli seslendirme ve görseller "
+              "Bu video özgün senaryo, "
+              "yerel yapay zekâ destekli "
+              "seslendirme ve Pexels görselleri "
               "kullanılarak hazırlanmıştır."
-              "\n\n"
+              "\n"
+              + pexels_credits
+              + "\n\n"
               "#KayıpHikâyeler #Gizem #Belgesel"
           )
 
+          # ---------------------------------------------------------
+          # 8. METADATA
+          # ---------------------------------------------------------
 
-          # ANA VİDEO
+          metadata = {
+              "title": data["title"],
+              "short_title": data["short_title"],
+              "scene_queries": data["scene_queries"],
+              "short_queries": data["short_queries"],
+              "thumbnail_query": data["thumbnail_query"],
+              "pexels_credits": all_credits,
+              "long_seconds": long_seconds,
+              "short_seconds": short_seconds
+          }
+
+          (OUT / "metadata.json").write_text(
+              json.dumps(
+                  metadata,
+                  ensure_ascii=False,
+                  indent=2
+              ),
+              encoding="utf-8"
+          )
+
+          # ---------------------------------------------------------
+          # 9. YOUTUBE
+          # ---------------------------------------------------------
+
+          api = youtube()
 
           upload(
               api,
@@ -956,9 +1210,6 @@ jobs:
               thumbnail
           )
 
-
-          # SHORT
-
           upload(
               api,
               short_video,
@@ -968,10 +1219,9 @@ jobs:
               None
           )
 
-
-          print(
-              "AUTOMATION COMPLETED"
-          )
+          print("=" * 60)
+          print("AUTOMATION COMPLETED")
+          print("=" * 60)
           PY
 
           python -m py_compile automation.py
