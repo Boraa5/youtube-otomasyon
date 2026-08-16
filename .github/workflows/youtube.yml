@@ -28,7 +28,25 @@ jobs:
           sudo apt-get install -y ffmpeg
           python -m pip install -U pip
           pip install google-genai google-api-python-client google-auth requests piper-tts==1.4.2
+      - name: Gemini Test
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python - <<'PY'
+          from google import genai
+          import os
 
+          client = genai.Client(
+              api_key=os.environ["GEMINI_API_KEY"]
+          )
+
+          print("===== GEMINI TEST =====")
+
+          for model in client.models.list():
+              print(model.name)
+
+          print("===== GEMINI TEST BITTI =====")
+          PY
       - name: Run
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
