@@ -10,7 +10,7 @@ from googleapiclient.http import MediaFileUpload
 OUT=Path("work"); OUT.mkdir(exist_ok=True)
 GEMINI=os.environ["GEMINI_API_KEY"]
 PEXELS=os.environ["PEXELS_API_KEY"]
-MODEL="gemini-2.5-flash"
+MODEL="gemini-3.1-flash-lite"
 client=genai.Client(api_key=GEMINI)
 
 PIPER=OUT/"tr_TR-dfki-medium.onnx"
