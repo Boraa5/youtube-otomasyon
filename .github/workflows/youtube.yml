@@ -145,7 +145,7 @@ jobs:
           MAX_SHORT_WORDS = 160
 
           MIN_LONG_SECONDS = 480
-          MAX_LONG_SECONDS = 900
+          MAX_LONG_SECONDS = 1200
 
           MIN_SHORT_SECONDS = 35
           MAX_SHORT_SECONDS = 75
