@@ -139,7 +139,7 @@ jobs:
           ]
 
           MIN_WORDS = 1800
-          MAX_WORDS = 2000
+          MAX_WORDS = 2200
 
           MIN_SHORT_WORDS = 100
           MAX_SHORT_WORDS = 160
