@@ -15,7 +15,7 @@ jobs:
 
     steps:
 
-      - name: Checkout
+    - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -127,7 +127,7 @@ jobs:
 
           MODEL = os.getenv(
               "OPENAI_MODEL",
-              "gpt-5.6-terra"
+              "gpt-5.6-luna"
           )
 
           client = OpenAI(
@@ -138,14 +138,14 @@ jobs:
               "PEXELS_API_KEY"
           ]
 
-          MIN_WORDS = 1800
-          MAX_WORDS = 2200
+          MIN_WORDS = 1250
+          MAX_WORDS = 1380
 
           MIN_SHORT_WORDS = 100
           MAX_SHORT_WORDS = 160
 
           MIN_LONG_SECONDS = 480
-          MAX_LONG_SECONDS = 1200
+          MAX_LONG_SECONDS = 660
 
           MIN_SHORT_SECONDS = 35
           MAX_SHORT_SECONDS = 75
@@ -419,11 +419,20 @@ jobs:
 
           Kaynaklardan emin olmadığın ayrıntıyı kullanma.
 
-          ANA SENARYO:
+     1250–1380 Türkçe kelime.
 
-          1800-2000 Türkçe kelime.
+İLK 30 SANİYE ÇOK ÖNEMLİDİR.
 
-          İlk 15 saniye güçlü merak kancası olsun.
+İlk 5 saniyede izleyicinin dikkatini yakala.
+İlk 15 saniyede güçlü bir merak ve soru oluştur.
+İlk 30 saniyede izleyiciye videonun sonunda öğreneceği
+şaşırtıcı bilgiyi merak ettir.
+
+Girişte gereksiz selamlama, kanal tanıtımı veya uzun açıklama yapma.
+Doğrudan olayın en şaşırtıcı noktasından başla.
+
+İlk 30 saniye boyunca izleyicinin "Ne olmuş?", "Neden?",
+"Gerçekten böyle mi?" diye düşünmesini sağlayacak anlatım kullan.
 
           Yapı:
 
@@ -790,200 +799,265 @@ jobs:
                   >= PIPER_CONFIG_MIN_SIZE
               ):
 
-                  print(
-                      "Piper modeli hazır."
-                  )
-
-                  return
-
-              print(
-                  "Piper Türkçe modeli indiriliyor..."
-              )
-
-              download_file(
-                  PIPER_BASE
-                  + "tr_TR-dfki-medium.onnx",
-                  PIPER_MODEL,
-                  PIPER_MODEL_MIN_SIZE
-              )
-
-              download_file(
-                  PIPER_BASE
-                  + "tr_TR-dfki-medium.onnx.json",
-                  PIPER_CONFIG,
-                  PIPER_CONFIG_MIN_SIZE
-              )
-
-              print(
-                  "Piper modeli hazır."
-              )
+    print("Piper modeli hazır.")
+    return
 
 
-          # =========================================================
-          # PEXELS
-          # =========================================================
+print("Piper Türkçe modeli kontrol ediliyor...")
 
-          def pexels_search(
-              query,
-              orientation
-          ):
+download_file(
+    PIPER_BASE
+    + "tr_TR-dfki-medium.onnx",
+    PIPER_MODEL,
+    PIPER_MODEL_MIN_SIZE
+)
 
-              query = re.sub(
-                  r"[^A-Za-z0-9\s.'&-]",
-                  " ",
-                  str(query)
-              )
+download_file(
+    PIPER_BASE
+    + "tr_TR-dfki-medium.onnx.json",
+    PIPER_CONFIG,
+    PIPER_CONFIG_MIN_SIZE
+)
 
-              query = re.sub(
-                  r"\s+",
-                  " ",
-                  query
-              ).strip()
-
-              if not query:
-                  query = "documentary"
-
-              last_error = None
-
-              for attempt in range(1, 5):
-
-                  try:
-
-                      response = requests.get(
-                          "https://api.pexels.com/v1/search",
-                          headers={
-                              "Authorization":
-                                  PEXELS_KEY
-                          },
-                          params={
-                              "query": query[:100],
-                              "orientation":
-                                  orientation,
-                              "per_page": 20,
-                              "page": 1
-                          },
-                          timeout=(15, 60)
-                      )
-
-                      if response.status_code == 429:
-
-                          wait = int(
-                              response.headers.get(
-                                  "Retry-After",
-                                  "5"
-                              )
-                          )
-
-                          time.sleep(
-                              min(wait, 30)
-                          )
-
-                          continue
-
-                      response.raise_for_status()
-
-                      photos = (
-                          response
-                          .json()
-                          .get("photos", [])
-                      )
-
-                      if not photos:
-                          raise RuntimeError(
-                              f"Pexels sonuç yok: {query}"
-                          )
-
-                      return photos
-
-                  except Exception as exc:
-
-                      last_error = exc
-
-                      print(
-                          f"Pexels arama "
-                          f"{attempt}/4:",
-                          exc
-                      )
-
-                      if attempt < 4:
-                          time.sleep(
-                              min(2 ** attempt, 10)
-                          )
-
-              raise RuntimeError(
-                  f"Pexels başarısız: "
-                  f"{query}: {last_error}"
-              )
+print("Piper modeli hazır.")
 
 
-          def download_pexels_image(
-              query,
-              output,
-              orientation,
-              used_ids
-          ):
+# ============================================================
+# PEXELS
+# ============================================================
 
-              photos = pexels_search(
-                  query,
-                  orientation
-              )
+def pexels_search(query, orientation):
+    query = re.sub(
+        r"[^A-Za-z0-9\s.'&-]",
+        " ",
+        str(query)
+    )
 
-              selected = next(
-                  (
-                      photo
-                      for photo in photos
-                      if photo["id"] not in used_ids
-                  ),
-                  photos[0]
-              )
+    query = re.sub(
+        r"\s+",
+        " ",
+        query
+    ).strip()
 
-              used_ids.add(
-                  selected["id"]
-              )
+    if not query:
+        query = "documentary"
 
-              src = selected.get(
-                  "src",
-                  {}
-              )
+    last_error = None
 
-              if orientation == "portrait":
+    for attempt in range(1, 5):
+        try:
+            response = requests.get(
+                "https://api.pexels.com/v1/search",
+                headers={
+                    "Authorization": PEXELS_KEY
+                },
+                params={
+                    "query": query[:100],
+                    "orientation": orientation,
+                    "per_page": 20,
+                    "page": 1
+                },
+                timeout=(15, 60)
+            )
 
-                  image_url = (
-                      src.get("portrait")
-                      or src.get("large2x")
-                      or src.get("original")
-                  )
+            if response.status_code == 429:
+                wait = int(
+                    response.headers.get(
+                        "Retry-After",
+                        "5"
+                    )
+                )
+                time.sleep(min(wait, 30))
+                continue
 
-              else:
+            response.raise_for_status()
 
-                  image_url = (
-                      src.get("landscape")
-                      or src.get("large2x")
-                      or src.get("original")
-                  )
+            photos = (
+                response
+                .json()
+                .get("photos", [])
+            )
 
-              if not image_url:
-                  raise RuntimeError(
-                      "Pexels görsel URL'si yok."
-                  )
+            if not photos:
+                raise RuntimeError(
+                    f"Pexels sonuç yok: {query}"
+                )
 
-              response = requests.get(
-                  image_url,
-                  headers={
-                      "User-Agent":
-                          "youtube-ai-studio/1.0"
-                  },
-                  timeout=(15, 60)
-              )
+            return photos
 
-              response.raise_for_status()
+        except Exception as exc:
+            last_error = exc
 
-              temp = output.with_suffix(
-                  output.suffix + ".part"
-              )
+            print(
+                f"Pexels arama "
+                f"{attempt}/4: {exc}"
+            )
 
-              temp.write_bytes(
-                  response.content
+            if attempt < 4:
+                time.sleep(
+                    min(2 ** attempt, 10)
+                )
+
+    raise RuntimeError(
+        f"Pexels başarısız: "
+        f"{query}: {last_error}"
+    )
+
+
+def download_pexels_image(
+    query,
+    output,
+    orientation,
+    used_ids
+):
+
+    photos = pexels_search(
+        query,
+        orientation
+    )
+
+    selected = next(
+        (
+            photo
+            for photo in photos
+            if photo["id"] not in used_ids
+        ),
+        photos[0]
+    )
+
+    used_ids.add(
+        selected["id"]
+    )
+
+    src = selected.get(
+        "src",
+        {}
+    )
+
+    if orientation == "portrait":
+        image_url = (
+            src.get("portrait")
+            or src.get("large2x")
+            or src.get("original")
+        )
+    else:
+        image_url = (
+            src.get("landscape")
+            or src.get("large2x")
+            or src.get("original")
+        )
+
+    if not image_url:
+        raise RuntimeError(
+            "Pexels görsel URL'si yok."
+        )
+
+    response = requests.get(
+        image_url,
+        headers={
+            "User-Agent":
+                "youtube-ai-studio/1.0"
+        },
+        timeout=(15, 60)
+    )
+
+    response.raise_for_status()
+
+    temp = output.with_suffix(
+        output.suffix + ".part"
+    )
+
+    temp.write_bytes(
+        response.content
+    )
+
+    if temp.stat().st_size < 5000:
+        temp.unlink(
+            missing_ok=True
+        )
+        raise RuntimeError(
+            "Pexels görsel eksik."
+        )
+
+    temp.replace(output)
+
+    return {
+        "id": selected["id"],
+        "url": selected.get(
+            "url",
+            ""
+        ),
+        "photographer": selected.get(
+            "photographer",
+            ""
+        ),
+        "photographer_url": selected.get(
+            "photographer_url",
+            ""
+        ),
+        "query": query
+    }
+
+
+def generate_pexels_images(
+    queries,
+    prefix,
+    orientation
+):
+
+    images = []
+    credits = []
+    used_ids = set()
+
+    for index, query in enumerate(
+        queries,
+        1
+    ):
+
+        output = (
+            OUT
+            / f"{prefix}_{index:02d}.jpg"
+        )
+
+        credit = None
+
+        for retry in range(1, 4):
+            try:
+                credit = download_pexels_image(
+                    query,
+                    output,
+                    orientation,
+                    used_ids
+                )
+                break
+
+            except Exception as exc:
+                print(
+                    f"Pexels görsel "
+                    f"{index} deneme "
+                    f"{retry}/3: {exc}"
+                )
+
+                if retry < 3:
+                    time.sleep(
+                        min(2 ** retry, 10)
+                    )
+
+        if credit is None:
+            raise RuntimeError(
+                f"Pexels görsel "
+                f"indirilemedi: {query}"
+            )
+
+        images.append(
+            output
+        )
+
+       credits.append(
+            credit
+        )
+
+    return images, credits
               )
 
               if temp.stat().st_size < 5000:
@@ -1000,7 +1074,7 @@ jobs:
 
               return {
                   "id": selected["id"],
-                  "url": selected.get(
+                 "url": selected.get(
                       "url",
                       ""
                   ),
