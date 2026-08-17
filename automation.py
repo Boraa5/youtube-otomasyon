@@ -173,21 +173,85 @@ scene_queries
 short_queries
 thumbnail_query
 """
-    for _ in range(3):
-        d=gemini(p)
+       last_error = "İlk üretim"
+
+    for attempt in range(5):
         try:
-            need=["title","description","tags","narration",
-                  "short_title","short_narration",
-                  "scene_queries","short_queries","thumbnail_query"]
-            if not all(x in d for x in need):raise ValueError("Alan eksik")
-            if not 1000<=wc(d["narration"])<=1500:raise ValueError("Ana kelime sayısı")
-            if not 100<=wc(d["short_narration"])<=160:raise ValueError("Short kelime sayısı")
-            if len(d["scene_queries"])!=12:raise ValueError("12 sahne gerekli")
-            if len(d["short_queries"])!=6:raise ValueError("6 short sahnesi gerekli")
+            extra = ""
+
+            if attempt > 0:
+                extra = f"""
+ÖNCEKİ PLAN KONTROLÜ BAŞARISIZ OLDU.
+
+Hata:
+{last_error}
+
+Bu hatayı kesin olarak düzelt.
+
+Ana narration TAM 1150-1350 Türkçe kelime olmalı.
+short_narration TAM 100-160 Türkçe kelime olmalı.
+scene_queries TAM 12 adet olmalı.
+short_queries TAM 6 adet olmalı.
+thumbnail_query kesinlikle dolu olmalı.
+Tüm JSON alanları gerçek içerikle doldurulmalı.
+Sadece geçerli JSON döndür.
+"""
+
+            d = gemini(p + extra)
+
+            need = [
+                "title",
+                "description",
+                "tags",
+                "narration",
+                "short_title",
+                "short_narration",
+                "scene_queries",
+                "short_queries",
+                "thumbnail_query"
+            ]
+
+            if not all(x in d for x in need):
+                raise ValueError("Alan eksik")
+
+            if not 1150 <= wc(d["narration"]) <= 1350:
+                raise ValueError(
+                    f"Ana narration kelime sayısı: {wc(d['narration'])}"
+                )
+
+            if not 100 <= wc(d["short_narration"]) <= 160:
+                raise ValueError(
+                    f"Short kelime sayısı: {wc(d['short_narration'])}"
+                )
+
+            if len(d["scene_queries"]) != 12:
+                raise ValueError(
+                    f"12 sahne sorgusu gerekli, gelen: {len(d['scene_queries'])}"
+                )
+
+            if len(d["short_queries"]) != 6:
+                raise ValueError(
+                    f"6 short sorgusu gerekli, gelen: {len(d['short_queries'])}"
+                )
+
+            if not str(d["thumbnail_query"]).strip():
+                raise ValueError("Thumbnail sorgusu boş")
+
             return d
+
         except Exception as e:
-            print("Plan kontrol:",e)
-    raise RuntimeError("Geçerli plan üretilemedi")
+            last_error = str(e)
+
+            print(
+                f"Plan kontrolü {attempt + 1}/5: {last_error}"
+            )
+
+            if attempt < 4:
+                time.sleep(3)
+
+    raise RuntimeError(
+        f"5 denemede geçerli plan üretilemedi. Son hata: {last_error}"
+    )
 
 def pexels(q,orientation,used):
     q=re.sub(r"[^A-Za-z0-9\s.'&-]"," ",str(q))
