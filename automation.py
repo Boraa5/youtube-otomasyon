@@ -173,20 +173,125 @@ scene_queries
 short_queries
 thumbnail_query
 """
-       last_error = "İlk üretim"
+               last_error = "İlk üretim"
 
     for attempt in range(5):
         try:
-            extra = ""
+            d = gemini(p)
 
-            if attempt > 0:
-                extra = f"""
-ÖNCEKİ PLAN KONTROLÜ BAŞARISIZ OLDU.
+            need = [
+                "title",
+                "description",
+                "tags",
+                "narration",
+                "short_title",
+                "short_narration",
+                "scene_queries",
+                "short_queries",
+                "thumbnail_query"
+            ]
 
-Hata:
-{last_error}
+            if not all(x in d for x in need):
+                raise ValueError("Alan eksik")
 
-Bu hatayı kesin olarak düzelt.
+            if not 1150 <= wc(d["narration"]) <= 1350:
+                raise ValueError(
+                    f"Ana narration kelime sayısı: {wc(d['narration'])}"
+                )
+
+            if not 100 <= wc(d["short_narration"]) <= 160:
+                raise ValueError(
+                    f"Short kelime sayısı: {wc(d['short_narration'])}"
+                )
+
+            if len(d["scene_queries"]) != 12:
+                raise ValueError("12 sahne gerekli")
+
+            if len(d["short_queries"]) != 6:
+                raise ValueError("6 short sahnesi gerekli")
+
+            if not d["thumbnail_query"]:
+                raise ValueError("Thumbnail sorgusu boş")
+
+            return d
+
+        except Exception as e:
+            last_error = str(e)
+            print("Plan kontrol:", last_error)
+
+            if attempt < 4:
+                time.sleep(3)
+
+    raise RuntimeError("Geçerli plan üretilemedi: " + last_error)
+
+
+def pexels(q, orientation, used):
+    q = re.sub(r"[^A-Za-z0-9\s.'&-]", " ", str(q))
+    q = re.sub(r"\s+", " ", q).strip() or "documentary"
+
+    r = requests.get(
+        "https://api.pexels.com/v1/search",
+        headers={"Authorization": PEXELS},
+        params={
+            "query": q,
+            "orientation": orientation,
+            "per_page": 20
+        },
+        timeout=60
+    )
+
+    r.raise_for_status()
+    photos = r.json().get("photos", [])
+
+    if not photos:
+        raise RuntimeError("Pexels sonuç yok: " + q)
+
+    p = next(
+        (x for x in photos if x["id"] not in used),
+        photos[0]
+    )
+
+    used.add(p["id"])
+    src = p["src"]
+
+    u = (
+        src.get("portrait")
+        if orientation == "portrait"
+        else src.get("landscape")
+    ) or src.get("large2x") or src.get("original")
+
+    return p, u
+
+
+def images(queries, prefix, orientation):
+    files = []
+    credits = []
+    used = set()
+
+    for i, q in enumerate(queries, 1):
+        p, u = pexels(q, orientation, used)
+
+        f = OUT / f"{prefix}_{i:02d}.jpg"
+
+        r = requests.get(u, timeout=90)
+        r.raise_for_status()
+
+        f.write_bytes(r.content)
+
+        if f.stat().st_size < 5000:
+            raise RuntimeError("Bozuk Pexels görseli")
+
+        files.append(f)
+        credits.append(p)
+
+    return files, credits
+
+            if attempt < 4:
+                time.sleep(3)
+
+    raise RuntimeError(
+        f"5 denemede geçerli plan üretilemedi. Son hata: {last_error}"
+    )
 
 Ana narration TAM 1150-1350 Türkçe kelime olmalı.
 short_narration TAM 100-160 Türkçe kelime olmalı.
