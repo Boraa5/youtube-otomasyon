@@ -173,9 +173,11 @@ scene_queries
 short_queries
 thumbnail_query
 """
-               last_error = "İlk üretim"
+    last_error = "İlk üretim"
 
     for attempt in range(5):
+        try:
+            d = gemini(p)
         try:
             d = gemini(p)
 
