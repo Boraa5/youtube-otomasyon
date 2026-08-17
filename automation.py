@@ -47,20 +47,59 @@ def gemini(prompt):
                 model=MODEL,
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    tools=[types.Tool(
-                        google_search=types.GoogleSearch()
-                    )],
+                    response_mime_type="application/json",
+                    response_schema={
+                        "type":"OBJECT",
+                        "properties":{
+                            "title":{"type":"STRING"},
+                            "description":{"type":"STRING"},
+                            "tags":{
+                                "type":"ARRAY",
+                                "items":{"type":"STRING"}
+                            },
+                            "narration":{"type":"STRING"},
+                            "short_title":{"type":"STRING"},
+                            "short_narration":{"type":"STRING"},
+                            "scene_queries":{
+                                "type":"ARRAY",
+                                "items":{"type":"STRING"}
+                            },
+                            "short_queries":{
+                                "type":"ARRAY",
+                                "items":{"type":"STRING"}
+                            },
+                            "thumbnail_query":{"type":"STRING"}
+                        },
+                        "required":[
+                            "title",
+                            "description",
+                            "tags",
+                            "narration",
+                            "short_title",
+                            "short_narration",
+                            "scene_queries",
+                            "short_queries",
+                            "thumbnail_query"
+                        ]
+                    },
                     temperature=.7
                 )
             )
-            t=re.sub(r"^```json\s*","",r.text.strip(),flags=re.I)
-            t=re.sub(r"\s*```$","",t)
-            a,b=t.find("{"),t.rfind("}")
-            if a<0 or b<a:raise RuntimeError("Gemini JSON hatası")
-            return json.loads(t[a:b+1])
+
+            return json.loads(r.text)
+
         except Exception as e:
-            print("Gemini:",e)
-            if n<2:time.sleep(4)
+            msg=str(e)
+            print("Gemini:",msg)
+
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                wait=20*(n+1)
+                print(f"Gemini kotası/hız sınırı. {wait} saniye bekleniyor...")
+                time.sleep(wait)
+            else:
+                if n<2:
+                    time.sleep(5)
+
     raise RuntimeError("Gemini içerik üretilemedi")
 
 def plan():
