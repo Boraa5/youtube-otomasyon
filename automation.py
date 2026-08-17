@@ -180,7 +180,7 @@ thumbnail_query
                   "short_title","short_narration",
                   "scene_queries","short_queries","thumbnail_query"]
             if not all(x in d for x in need):raise ValueError("Alan eksik")
-            if not 1150<=wc(d["narration"])<=1350:raise ValueError("Ana kelime sayısı")
+            if not 1000<=wc(d["narration"])<=1500:raise ValueError("Ana kelime sayısı")
             if not 100<=wc(d["short_narration"])<=160:raise ValueError("Short kelime sayısı")
             if len(d["scene_queries"])!=12:raise ValueError("12 sahne gerekli")
             if len(d["short_queries"])!=6:raise ValueError("6 short sahnesi gerekli")
