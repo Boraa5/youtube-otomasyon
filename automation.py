@@ -146,19 +146,32 @@ Türkçe karakter kullanma.
 Gerçek yer, nesne, bina, insan, doğa, arkeolojik alan veya
 bilimsel ekipmanı tarif et.
 
-SADECE ŞU JSON'U DÖNDÜR:
+SADECE GEÇERLİ JSON DÖNDÜR.
 
-{
-"title":"",
-"description":"",
-"tags":[],
-"narration":"",
-"short_title":"",
-"short_narration":"",
-"scene_queries":[],
-"short_queries":[],
-"thumbnail_query":""
-}
+ÇOK ÖNEMLİ:
+- Hiçbir alan boş bırakılamaz.
+- Örnek/şablon değerleri aynen kopyalama.
+- Tüm alanları gerçek içerikle doldur.
+- narration 1150-1350 Türkçe kelime olmalı.
+- short_narration 100-160 Türkçe kelime olmalı.
+- scene_queries TAM OLARAK 12 adet İngilizce Pexels arama sorgusu içermeli.
+- short_queries TAM OLARAK 6 adet İngilizce Pexels arama sorgusu içermeli.
+- thumbnail_query TAM OLARAK 1 adet İngilizce Pexels arama sorgusu içermeli.
+- tags en az 5 alakalı etiket içermeli.
+- title ve description mutlaka dolu olmalı.
+- narration içinde başlık, kaynak listesi veya JSON bulunmamalı.
+- Sadece JSON döndür. JSON dışında hiçbir açıklama yazma.
+
+JSON alanları tam olarak şunlar olmalı:
+title
+description
+tags
+narration
+short_title
+short_narration
+scene_queries
+short_queries
+thumbnail_query
 """
     for _ in range(3):
         d=gemini(p)
