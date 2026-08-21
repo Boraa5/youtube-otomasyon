@@ -1,5 +1,10 @@
-import os,re,json,time,subprocess
+import os
+import re
+import json
+import time
+import subprocess
 from pathlib import Path
+
 import requests
 from google import genai
 from google.genai import types
@@ -7,70 +12,165 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-OUT=Path("work"); OUT.mkdir(exist_ok=True)
-GEMINI=os.environ["GEMINI_API_KEY"]
-PEXELS=os.environ["PEXELS_API_KEY"]
-MODEL="gemini-3.1-flash-lite"
-client=genai.Client(api_key=GEMINI)
 
-PIPER=OUT/"tr_TR-dfki-medium.onnx"
-PIPER_CFG=OUT/"tr_TR-dfki-medium.onnx.json"
-PIPER_URL="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/tr/tr_TR/dfki/medium/"
+# ============================================================
+# AYARLAR
+# ============================================================
 
-def run(c,inp=None):
-    print("$"," ".join(map(str,c)))
-    subprocess.run(c,input=inp,text=True,check=True)
+OUT = Path("work")
+OUT.mkdir(exist_ok=True)
 
-def wc(s):
-    return len(re.findall(r"\b[\wÇĞİÖŞÜçğıöşü'-]+\b",str(s)))
+GEMINI = os.environ["GEMINI_API_KEY"]
+PEXELS = os.environ["PEXELS_API_KEY"]
 
-def dur(f):
-    return float(subprocess.check_output([
-        "ffprobe","-v","error","-show_entries","format=duration",
-        "-of","default=noprint_wrappers=1:nokey=1",str(f)
-    ],text=True).strip())
+MODEL = "gemini-3.1-flash-lite"
 
-def get(url,path,minimum=500):
-    if path.exists() and path.stat().st_size>=minimum:return
-    r=requests.get(url,timeout=180);r.raise_for_status()
-    path.write_bytes(r.content)
-    if path.stat().st_size<minimum:raise RuntimeError("Eksik dosya: "+str(path))
+client = genai.Client(api_key=GEMINI)
+
+
+# ============================================================
+# TÜRKÇE PIPER SESİ
+# ============================================================
+
+PIPER = OUT / "tr_TR-dfki-medium.onnx"
+PIPER_CFG = OUT / "tr_TR-dfki-medium.onnx.json"
+
+PIPER_URL = (
+    "https://huggingface.co/rhasspy/piper-voices/"
+    "resolve/v1.0.0/tr/tr_TR/dfki/medium/"
+)
+
+
+# ============================================================
+# YARDIMCI FONKSİYONLAR
+# ============================================================
+
+def run(command, inp=None):
+    print("$", " ".join(map(str, command)))
+    subprocess.run(
+        command,
+        input=inp,
+        text=True,
+        check=True
+    )
+
+
+def wc(text):
+    return len(
+        re.findall(
+            r"\b[\wÇĞİÖŞÜçğıöşü'-]+\b",
+            str(text)
+        )
+    )
+
+
+def dur(file_path):
+    result = subprocess.check_output(
+        [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(file_path)
+        ],
+        text=True
+    )
+
+    return float(result.strip())
+
+
+def get(url, path, minimum=500):
+    if path.exists() and path.stat().st_size >= minimum:
+        return
+
+    response = requests.get(
+        url,
+        timeout=180
+    )
+
+    response.raise_for_status()
+
+    path.write_bytes(response.content)
+
+    if path.stat().st_size < minimum:
+        raise RuntimeError(
+            "Eksik dosya indirildi: " + str(path)
+        )
+
+
+# ============================================================
+# PIPER KURULUMU
+# ============================================================
 
 def setup():
-    get(PIPER_URL+"tr_TR-dfki-medium.onnx",PIPER,50_000_000)
-    get(PIPER_URL+"tr_TR-dfki-medium.onnx.json",PIPER_CFG,500)
+    print("Türkçe ses modeli kontrol ediliyor...")
+
+    get(
+        PIPER_URL + "tr_TR-dfki-medium.onnx",
+        PIPER,
+        50_000_000
+    )
+
+    get(
+        PIPER_URL + "tr_TR-dfki-medium.onnx.json",
+        PIPER_CFG,
+        500
+    )
+
+
+# ============================================================
+# GEMINI
+# ============================================================
 
 def gemini(prompt):
-    for n in range(3):
+    for attempt in range(3):
         try:
-            r=client.models.generate_content(
+            response = client.models.generate_content(
                 model=MODEL,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema={
-                        "type":"OBJECT",
-                        "properties":{
-                            "title":{"type":"STRING"},
-                            "description":{"type":"STRING"},
-                            "tags":{
-                                "type":"ARRAY",
-                                "items":{"type":"STRING"}
+                        "type": "OBJECT",
+                        "properties": {
+                            "title": {
+                                "type": "STRING"
                             },
-                            "narration":{"type":"STRING"},
-                            "short_title":{"type":"STRING"},
-                            "short_narration":{"type":"STRING"},
-                            "scene_queries":{
-                                "type":"ARRAY",
-                                "items":{"type":"STRING"}
+                            "description": {
+                                "type": "STRING"
                             },
-                            "short_queries":{
-                                "type":"ARRAY",
-                                "items":{"type":"STRING"}
+                            "tags": {
+                                "type": "ARRAY",
+                                "items": {
+                                    "type": "STRING"
+                                }
                             },
-                            "thumbnail_query":{"type":"STRING"}
+                            "narration": {
+                                "type": "STRING"
+                            },
+                            "short_title": {
+                                "type": "STRING"
+                            },
+                            "short_narration": {
+                                "type": "STRING"
+                            },
+                            "scene_queries": {
+                                "type": "ARRAY",
+                                "items": {
+                                    "type": "STRING"
+                                }
+                            },
+                            "short_queries": {
+                                "type": "ARRAY",
+                                "items": {
+                                    "type": "STRING"
+                                }
+                            },
+                            "thumbnail_query": {
+                                "type": "STRING"
+                            }
                         },
-                        "required":[
+                        "required": [
                             "title",
                             "description",
                             "tags",
@@ -82,87 +182,211 @@ def gemini(prompt):
                             "thumbnail_query"
                         ]
                     },
-                    temperature=.7
+                    temperature=0.8
                 )
             )
 
-            return json.loads(r.text)
+            return json.loads(response.text)
 
-        except Exception as e:
-            msg=str(e)
-            print("Gemini:",msg)
+        except Exception as error:
+            message = str(error)
 
-            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-                wait=20*(n+1)
-                print(f"Gemini kotası/hız sınırı. {wait} saniye bekleniyor...")
+            print("Gemini hatası:", message)
+
+            if (
+                "429" in message
+                or "RESOURCE_EXHAUSTED" in message
+            ):
+                wait = 20 * (attempt + 1)
+
+                print(
+                    f"Gemini sınırı. "
+                    f"{wait} saniye bekleniyor..."
+                )
+
                 time.sleep(wait)
+
             else:
-                if n<2:
+                if attempt < 2:
                     time.sleep(5)
 
-    raise RuntimeError("Gemini içerik üretilemedi")
+    raise RuntimeError(
+        "Gemini içerik üretilemedi."
+    )
+
+
+# ============================================================
+# YENİ NİŞ:
+# GERÇEK, İNANILMAZ, MERAK UYANDIRAN HİKÂYELER
+# ============================================================
 
 def plan():
-    p=r"""
-Türkçe YouTube belgesel kanalı "Kayıp Hikâyeler" için TEK bölüm hazırla.
+    prompt = r"""
+Türkçe YouTube kanalı "Kayıp Hikâyeler" için TEK BİR gerçek
+ve çok merak uyandıran hikâye hazırla.
 
-Konu gizem, tarih, arkeoloji, bilim, uzay veya şaşırtıcı ama
-doğrulanabilir evergreen bir gerçek olsun.
+KANALIN YENİ NİŞİ:
 
-GOOGLE SEARCH İLE ARAŞTIR.
-Güvenilir üniversite, müze, devlet kurumu, bilimsel kurum ve
-güvenilir haber kaynaklarını tercih et.
-Uydurma bilgi, tarih, sayı, isim veya alıntı kullanma.
-Belirsiz iddiaları kesin gerçek gibi anlatma.
+Gerçek hayatta yaşanmış;
+- yıllarca kayıp kalan insanların bulunması,
+- kaybolan kişilerin inanılmaz şekilde ortaya çıkması,
+- polisin veya ailenin uzun süre çözemediği gerçek olaylar,
+- bir evde, odada, binada veya çok yakında olmasına rağmen
+  yıllarca fark edilmeyen insanlar veya kanıtlar,
+- kayıp vakalarının beklenmedik şekilde çözülmesi,
+- yıllar sonra ortaya çıkan sırlar,
+- gerçek ve doğrulanabilir inanılmaz insan hikâyeleri,
+- herkesin yanlış düşündüğü ama sonradan gerçeğin ortaya çıktığı
+  gerçek olaylar.
 
-ANA VİDEO 1150-1350 TÜRKÇE KELİME OLSUN.
-Yaklaşık 7-10 dakika.
+KONU ARKEOLOJİ OLMASIN.
+TARİH BELGESELİ GİBİ GENEL BİR KONU OLMASIN.
+UZAY, ANTİK MEDENİYET VE RASTGELE BİLİM KONUSU SEÇME.
 
-İLK 15 SANİYE ÇOK GÜÇLÜ OLSUN:
-İlk cümle doğrudan gizemli/şaşırtıcı olayla başlasın.
-Selamlama, kanal tanıtımı ve "bugün sizlere" kullanma.
-İlk 5 saniyede merak oluştur.
-İlk 15 saniyede büyük soruyu kur.
-İzleyici cevabı öğrenmek için videoda kalmak istesin.
+Hikâye MUTLAKA gerçek, doğrulanabilir ve tek bir ana olay
+etrafında ilerlemeli.
 
-Yapı:
-güçlü açılış, arka plan, kronoloji, kanıtlar,
-alternatif açıklamalar, en güçlü bulgular, dengeli sonuç,
-kısa kapanış.
+Uydurma kişi, tarih, sayı, polis bilgisi veya olay oluşturma.
+Doğrulanamayan söylentileri gerçek gibi anlatma.
 
-Doğal Türkçe konuşma dili kullan.
-Narration içinde başlık veya kaynak listesi yazma.
+Mümkün olduğunca güvenilir kaynaklarda belgelenmiş gerçek
+olaylardan yararlan.
 
-SHORT 100-160 kelime, 35-75 saniye.
-Bağımsız anlaşılmalı ve ana videonun kopyası olmamalı.
-Short da ilk cümlede merak uyandırmalı.
+------------------------------------------------------------
 
-ANA VİDEO İÇİN TAM 12 İNGİLİZCE PEXELS SORGUSU.
-SHORT İÇİN TAM 6 İNGİLİZCE PEXELS SORGUSU.
-THUMBNAIL İÇİN 1 İNGİLİZCE PEXELS SORGUSU.
+ANA VİDEO:
 
-Her sorgu 2-6 kelime.
-Türkçe karakter kullanma.
-Gerçek yer, nesne, bina, insan, doğa, arkeolojik alan veya
-bilimsel ekipmanı tarif et.
+Uzunluk hedefi yaklaşık 7-9 dakika.
 
-SADECE GEÇERLİ JSON DÖNDÜR.
+Narration TAM OLARAK 1050-1250 Türkçe kelime arasında olsun.
 
-ÇOK ÖNEMLİ:
-- Hiçbir alan boş bırakılamaz.
-- Örnek/şablon değerleri aynen kopyalama.
-- Tüm alanları gerçek içerikle doldur.
-- narration 1150-1350 Türkçe kelime olmalı.
-- short_narration 100-160 Türkçe kelime olmalı.
-- scene_queries TAM OLARAK 12 adet İngilizce Pexels arama sorgusu içermeli.
-- short_queries TAM OLARAK 6 adet İngilizce Pexels arama sorgusu içermeli.
-- thumbnail_query TAM OLARAK 1 adet İngilizce Pexels arama sorgusu içermeli.
-- tags en az 5 alakalı etiket içermeli.
-- title ve description mutlaka dolu olmalı.
-- narration içinde başlık, kaynak listesi veya JSON bulunmamalı.
-- Sadece JSON döndür. JSON dışında hiçbir açıklama yazma.
+İLK 5 SANİYE ÇOK KRİTİK.
 
-JSON alanları tam olarak şunlar olmalı:
+Video doğrudan olayın en inanılmaz yerinden başlamalı.
+
+KESİNLİKLE ŞUNLARI KULLANMA:
+"Merhaba"
+"Kanalımıza hoş geldiniz"
+"Bugün sizlere"
+"Bu videoda"
+"Şimdi anlatacağımız"
+
+İlk cümle izleyiciyi doğrudan olayın içine atsın.
+
+ÖRNEK MANTIK:
+"Polis bu evi defalarca aradı. Ama aradıkları kişi
+12 yıl boyunca aslında çok yakındaydı."
+
+Bu örneği aynen kullanma. Sadece mantığını uygula.
+
+İLK 15 SANİYEDE:
+- inanılmaz olay açıkça hissettirilsin,
+- büyük soru oluşturulsun,
+- izleyici "nasıl oldu?" diye merak etsin.
+
+İLK 30 SANİYEDE:
+- hikâyenin neden inanılmaz olduğu netleşsin,
+- ancak bütün cevap hemen verilmesin.
+
+Hikâye boyunca yeni bilgiler kademeli ortaya çıksın.
+Her 20-40 saniyede yeni bir merak, soru, ayrıntı veya
+beklenmedik gelişme olsun.
+
+Anlatım doğal Türkçe konuşma diliyle yazılsın.
+Robot gibi, Wikipedia gibi veya ders anlatır gibi olmasın.
+
+YAPI:
+
+1. Çok güçlü ve şok edici açılış
+2. Büyük soru
+3. Olayın başlangıcı
+4. Kayıp veya gizemin derinleşmesi
+5. Aramalar ve başarısız girişimler
+6. Yeni ipuçları
+7. Beklenmedik gelişme
+8. Gerçeğin ortaya çıkışı
+9. Olayın en inanılmaz ayrıntısı
+10. Kısa ama etkili sonuç
+
+Sonuçta hikâyenin tamamı açıklansın.
+Gereksiz uzun kapanış yapma.
+
+Narration içinde:
+- başlık yazma
+- bölüm numarası yazma
+- kaynak listesi yazma
+- "giriş", "sonuç" gibi etiketler yazma
+
+------------------------------------------------------------
+
+BAŞLIK:
+
+Başlık kısa, güçlü ve merak uyandırıcı olsun.
+
+Clickbait olarak yalan söyleme.
+
+Mümkünse şu mantıklardan birini kullan:
+"12 Yıl Kayıptı... Ama Polis Onu İlk Aradığı Yerde Buldu"
+"Herkes Onun Öldüğünü Sandı... Yıllar Sonra Gerçek Ortaya Çıktı"
+"Polis Bu Odayı Defalarca Aradı... Ama Gerçeği Göremedi"
+
+Bu örnekleri aynen kopyalama.
+
+Başlık olayın en güçlü gizemini söylesin ama bütün cevabı
+vermesin.
+
+------------------------------------------------------------
+
+SHORT:
+
+Short aynı gerçek hikâyeye bağlı olsun.
+
+Short, ana videodan tamamen kopuk başka bir konu olmasın.
+
+TAM OLARAK 30-50 saniyelik anlatıma uygun olsun.
+
+short_narration yaklaşık 75-115 Türkçe kelime olsun.
+
+İlk 3 saniye çok güçlü olsun.
+
+Short:
+- olayın en inanılmaz anından başlamalı,
+- bütün hikâyeyi anlatmamalı,
+- ana videonun cevabını tamamen vermemeli,
+- izleyicide devamını öğrenme isteği bırakmalı.
+
+Short'un son cümlesi doğal biçimde merak bıraksın.
+"Devamı kanalda" gibi zoraki reklam cümlesi kullanma.
+
+------------------------------------------------------------
+
+PEXELS:
+
+ANA VİDEO İÇİN TAM OLARAK 12 İngilizce Pexels sorgusu üret.
+
+SHORT İÇİN TAM OLARAK 6 İngilizce Pexels sorgusu üret.
+
+Her sorgu:
+- İngilizce
+- 2 ile 6 kelime arasında
+- gerçek insan, ev, polis, sokak, orman, bina,
+  kayıp kişi atmosferi, belge, arama veya olayla ilgili olsun
+- soyut ve anlamsız kelimeler kullanma
+
+THUMBNAIL İÇİN TAM OLARAK 1 İngilizce Pexels sorgusu üret.
+
+Thumbnail sorgusu çok güçlü görsel oluşturabilecek şekilde
+hikâyenin en gizemli nesnesini, yeri veya atmosferini tarif etsin.
+
+------------------------------------------------------------
+
+JSON KURALLARI:
+
+SADECE geçerli JSON döndür.
+JSON dışında hiçbir açıklama yazma.
+
+Alanlar TAM OLARAK şunlar:
+
 title
 description
 tags
@@ -172,16 +396,32 @@ short_narration
 scene_queries
 short_queries
 thumbnail_query
+
+ZORUNLU KURALLAR:
+
+- Hiçbir alan boş olamaz.
+- title boş olamaz.
+- description boş olamaz.
+- tags en az 5 adet olmalı.
+- narration 1050-1250 Türkçe kelime olmalı.
+- short_narration 75-115 Türkçe kelime olmalı.
+- scene_queries TAM 12 adet olmalı.
+- short_queries TAM 6 adet olmalı.
+- thumbnail_query boş olamaz.
+- Uydurma bilgi kullanma.
+- Hikâye tek bir gerçek olay etrafında ilerlesin.
+- Arkeoloji konusu seçme.
+- Genel tarih belgeseli konusu seçme.
+- Short aynı hikâyeden olmalı.
 """
-    last_error = "İlk üretim"
+
+    last_error = "Henüz üretim yapılmadı."
 
     for attempt in range(5):
         try:
-            d = gemini(p)
-        try:
-            d = gemini(p)
+            data = gemini(prompt)
 
-            need = [
+            required = [
                 "title",
                 "description",
                 "tags",
@@ -193,398 +433,780 @@ thumbnail_query
                 "thumbnail_query"
             ]
 
-            if not all(x in d for x in need):
-                raise ValueError("Alan eksik")
-
-            if not 1150 <= wc(d["narration"]) <= 1350:
+            if not all(
+                field in data
+                for field in required
+            ):
                 raise ValueError(
-                    f"Ana narration kelime sayısı: {wc(d['narration'])}"
+                    "JSON alanlarından biri eksik."
                 )
 
-            if not 100 <= wc(d["short_narration"]) <= 160:
+            if not str(data["title"]).strip():
+                raise ValueError("Başlık boş.")
+
+            if not str(data["description"]).strip():
+                raise ValueError("Açıklama boş.")
+
+            if len(data["tags"]) < 5:
                 raise ValueError(
-                    f"Short kelime sayısı: {wc(d['short_narration'])}"
+                    "En az 5 etiket gerekli."
                 )
 
-            if len(d["scene_queries"]) != 12:
-                raise ValueError("12 sahne gerekli")
+            narration_words = wc(
+                data["narration"]
+            )
 
-            if len(d["short_queries"]) != 6:
-                raise ValueError("6 short sahnesi gerekli")
+            if not 1050 <= narration_words <= 1250:
+                raise ValueError(
+                    f"Ana anlatım kelime sayısı yanlış: "
+                    f"{narration_words}"
+                )
 
-            if not d["thumbnail_query"]:
-                raise ValueError("Thumbnail sorgusu boş")
+            short_words = wc(
+                data["short_narration"]
+            )
 
-            return d
+            if not 75 <= short_words <= 115:
+                raise ValueError(
+                    f"Short kelime sayısı yanlış: "
+                    f"{short_words}"
+                )
 
-        except Exception as e:
-            last_error = str(e)
-            print("Plan kontrol:", last_error)
+            if len(data["scene_queries"]) != 12:
+                raise ValueError(
+                    "Ana video için tam 12 sahne gerekli."
+                )
+
+            if len(data["short_queries"]) != 6:
+                raise ValueError(
+                    "Short için tam 6 sahne gerekli."
+                )
+
+            if not str(
+                data["thumbnail_query"]
+            ).strip():
+                raise ValueError(
+                    "Thumbnail sorgusu boş."
+                )
+
+            return data
+
+        except Exception as error:
+            last_error = str(error)
+
+            print(
+                f"Plan kontrolü "
+                f"{attempt + 1}/5: "
+                f"{last_error}"
+            )
 
             if attempt < 4:
-                time.sleep(3)
+                time.sleep(4)
 
-    raise RuntimeError("Geçerli plan üretilemedi: " + last_error)
+    raise RuntimeError(
+        "Geçerli plan üretilemedi. "
+        "Son hata: " + last_error
+    )
 
 
-def pexels(q, orientation, used):
-    q = re.sub(r"[^A-Za-z0-9\s.'&-]", " ", str(q))
-    q = re.sub(r"\s+", " ", q).strip() or "documentary"
+# ============================================================
+# PEXELS
+# ============================================================
 
-    r = requests.get(
+def pexels(query, orientation, used):
+    query = re.sub(
+        r"[^A-Za-z0-9\s.'&-]",
+        " ",
+        str(query)
+    )
+
+    query = re.sub(
+        r"\s+",
+        " ",
+        query
+    ).strip()
+
+    if not query:
+        query = "mystery documentary"
+
+    response = requests.get(
         "https://api.pexels.com/v1/search",
-        headers={"Authorization": PEXELS},
+        headers={
+            "Authorization": PEXELS
+        },
         params={
-            "query": q,
+            "query": query,
             "orientation": orientation,
             "per_page": 20
         },
         timeout=60
     )
 
-    r.raise_for_status()
-    photos = r.json().get("photos", [])
+    response.raise_for_status()
+
+    photos = response.json().get(
+        "photos",
+        []
+    )
 
     if not photos:
-        raise RuntimeError("Pexels sonuç yok: " + q)
+        raise RuntimeError(
+            "Pexels sonucu bulunamadı: " + query
+        )
 
-    p = next(
-        (x for x in photos if x["id"] not in used),
+    photo = next(
+        (
+            item
+            for item in photos
+            if item["id"] not in used
+        ),
         photos[0]
     )
 
-    used.add(p["id"])
-    src = p["src"]
+    used.add(photo["id"])
 
-    u = (
-        src.get("portrait")
-        if orientation == "portrait"
-        else src.get("landscape")
-    ) or src.get("large2x") or src.get("original")
+    source = photo["src"]
 
-    return p, u
+    if orientation == "portrait":
+        image_url = source.get("portrait")
+    else:
+        image_url = source.get("landscape")
+
+    if not image_url:
+        image_url = (
+            source.get("large2x")
+            or source.get("original")
+        )
+
+    return photo, image_url
 
 
-def images(queries, prefix, orientation):
+def images(
+    queries,
+    prefix,
+    orientation
+):
     files = []
     credits = []
     used = set()
 
-    for i, q in enumerate(queries, 1):
-        p, u = pexels(q, orientation, used)
+    for index, query in enumerate(
+        queries,
+        1
+    ):
+        photo, image_url = pexels(
+            query,
+            orientation,
+            used
+        )
 
-        f = OUT / f"{prefix}_{i:02d}.jpg"
+        file_path = (
+            OUT /
+            f"{prefix}_{index:02d}.jpg"
+        )
 
-        r = requests.get(u, timeout=90)
-        r.raise_for_status()
+        response = requests.get(
+            image_url,
+            timeout=90
+        )
 
-        f.write_bytes(r.content)
+        response.raise_for_status()
 
-        if f.stat().st_size < 5000:
-            raise RuntimeError("Bozuk Pexels görseli")
+        file_path.write_bytes(
+            response.content
+        )
 
-        files.append(f)
-        credits.append(p)
+        if file_path.stat().st_size < 5000:
+            raise RuntimeError(
+                "Bozuk Pexels görseli."
+            )
+
+        files.append(file_path)
+        credits.append(photo)
 
     return files, credits
 
-            if attempt < 4:
-                time.sleep(3)
 
-    raise RuntimeError(
-        f"5 denemede geçerli plan üretilemedi. Son hata: {last_error}"
+# ============================================================
+# TTS
+# ============================================================
+
+def tts(text, output):
+    text = re.sub(
+        r"\s+",
+        " ",
+        str(text)
+    ).strip()
+
+    chunks = []
+
+    while len(text) > 2200:
+        split_at = text.rfind(
+            " ",
+            0,
+            2200
+        )
+
+        if split_at < 500:
+            split_at = 2200
+
+        chunks.append(
+            text[:split_at]
+        )
+
+        text = text[split_at:].strip()
+
+    if text:
+        chunks.append(text)
+
+    wav_files = []
+
+    for index, chunk in enumerate(chunks):
+        wav_file = (
+            OUT /
+            f"{output.stem}_{index:03d}.wav"
+        )
+
+        run(
+            [
+                "python",
+                "-m",
+                "piper",
+                "--model",
+                str(PIPER),
+                "--output_file",
+                str(wav_file),
+                "--sentence-silence",
+                "0.18",
+                "--length-scale",
+                "0.88",
+                "--noise-scale",
+                "0.667",
+                "--noise-w",
+                "0.8"
+            ],
+            chunk
+        )
+
+        wav_files.append(wav_file)
+
+    concat_file = (
+        OUT /
+        f"{output.stem}_concat.txt"
     )
 
-Ana narration TAM 1150-1350 Türkçe kelime olmalı.
-short_narration TAM 100-160 Türkçe kelime olmalı.
-scene_queries TAM 12 adet olmalı.
-short_queries TAM 6 adet olmalı.
-thumbnail_query kesinlikle dolu olmalı.
-Tüm JSON alanları gerçek içerikle doldurulmalı.
-Sadece geçerli JSON döndür.
-"""
-
-            d = gemini(p + extra)
-
-            need = [
-                "title",
-                "description",
-                "tags",
-                "narration",
-                "short_title",
-                "short_narration",
-                "scene_queries",
-                "short_queries",
-                "thumbnail_query"
-            ]
-
-            if not all(x in d for x in need):
-                raise ValueError("Alan eksik")
-
-            if not 1150 <= wc(d["narration"]) <= 1350:
-                raise ValueError(
-                    f"Ana narration kelime sayısı: {wc(d['narration'])}"
-                )
-
-            if not 100 <= wc(d["short_narration"]) <= 160:
-                raise ValueError(
-                    f"Short kelime sayısı: {wc(d['short_narration'])}"
-                )
-
-            if len(d["scene_queries"]) != 12:
-                raise ValueError(
-                    f"12 sahne sorgusu gerekli, gelen: {len(d['scene_queries'])}"
-                )
-
-            if len(d["short_queries"]) != 6:
-                raise ValueError(
-                    f"6 short sorgusu gerekli, gelen: {len(d['short_queries'])}"
-                )
-
-            if not str(d["thumbnail_query"]).strip():
-                raise ValueError("Thumbnail sorgusu boş")
-
-            return d
-
-        except Exception as e:
-            last_error = str(e)
-
-            print(
-                f"Plan kontrolü {attempt + 1}/5: {last_error}"
-            )
-
-            if attempt < 4:
-                time.sleep(3)
-
-    raise RuntimeError(
-        f"5 denemede geçerli plan üretilemedi. Son hata: {last_error}"
-    )
-
-def pexels(q,orientation,used):
-    q=re.sub(r"[^A-Za-z0-9\s.'&-]"," ",str(q))
-    q=re.sub(r"\s+"," ",q).strip() or "documentary"
-    r=requests.get(
-        "https://api.pexels.com/v1/search",
-        headers={"Authorization":PEXELS},
-        params={"query":q,"orientation":orientation,"per_page":20},
-        timeout=60
-    )
-    r.raise_for_status()
-    photos=r.json().get("photos",[])
-    if not photos:raise RuntimeError("Pexels sonuç yok: "+q)
-    p=next((x for x in photos if x["id"] not in used),photos[0])
-    used.add(p["id"])
-    src=p["src"]
-    u=src.get("portrait" if orientation=="portrait" else "landscape") or src.get("large2x") or src.get("original")
-    return p,u
-
-def images(queries,prefix,orientation):
-    files=[];credits=[];used=set()
-    for i,q in enumerate(queries,1):
-        p,u=pexels(q,orientation,used)
-        f=OUT/f"{prefix}_{i:02}.jpg"
-        r=requests.get(u,timeout=90);r.raise_for_status()
-        f.write_bytes(r.content)
-        if f.stat().st_size<5000:raise RuntimeError("Bozuk Pexels görseli")
-        files.append(f);credits.append(p)
-    return files,credits
-
-def tts(text,out):
-    text=re.sub(r"\s+"," ",str(text)).strip()
-    chunks=[]
-    while len(text)>2200:
-        n=text.rfind(" ",0,2200)
-        if n<500:n=2200
-        chunks.append(text[:n]);text=text[n:].strip()
-    if text:chunks.append(text)
-
-    wavs=[]
-    for i,x in enumerate(chunks):
-        w=OUT/f"{out.stem}_{i:03}.wav"
-        run([
-            "python","-m","piper",
-            "--model",str(PIPER),
-            "--output_file",str(w),
-            "--sentence-silence","0.18",
-            "--length-scale","0.88",
-            "--noise-scale","0.667",
-            "--noise-w","0.8"
-        ],x)
-        wavs.append(w)
-
-    lst=OUT/f"{out.stem}_concat.txt"
-    lst.write_text(
-        "\n".join("file '"+str(x.resolve()).replace("'","'\\''")+"'"
-                  for x in wavs),
+    concat_file.write_text(
+        "\n".join(
+            "file '" +
+            str(wav.resolve()).replace(
+                "'",
+                "'\\''"
+            ) +
+            "'"
+            for wav in wav_files
+        ),
         encoding="utf-8"
     )
-    run([
-        "ffmpeg","-y","-f","concat","-safe","0",
-        "-i",str(lst),"-c:a","libmp3lame","-b:a","160k",str(out)
-    ])
 
-def make_video(audio,imgs,out,vertical=False):
-    total=dur(audio)
-    each=total/len(imgs)
-    if each<2:raise RuntimeError("Sahne süresi çok kısa")
-
-    lst=OUT/f"{out.stem}_slides.txt"
-    lines=[]
-    for x in imgs:
-        lines += [
-            "file '"+str(x.resolve()).replace("'","'\\''")+"'",
-            f"duration {each:.3f}"
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_file),
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "160k",
+            str(output)
         ]
-    lines.append("file '"+str(imgs[-1].resolve()).replace("'","'\\''")+"'")
-    lst.write_text("\n".join(lines),encoding="utf-8")
+    )
+
+
+# ============================================================
+# VİDEO OLUŞTURMA
+# ============================================================
+
+def make_video(
+    audio,
+    image_files,
+    output,
+    vertical=False
+):
+    total = dur(audio)
+
+    each = total / len(image_files)
+
+    if each < 2:
+        raise RuntimeError(
+            "Sahne süresi çok kısa."
+        )
+
+    slide_list = (
+        OUT /
+        f"{output.stem}_slides.txt"
+    )
+
+    lines = []
+
+    for image_file in image_files:
+        safe_path = str(
+            image_file.resolve()
+        ).replace(
+            "'",
+            "'\\''"
+        )
+
+        lines.append(
+            f"file '{safe_path}'"
+        )
+
+        lines.append(
+            f"duration {each:.3f}"
+        )
+
+    last_path = str(
+        image_files[-1].resolve()
+    ).replace(
+        "'",
+        "'\\''"
+    )
+
+    lines.append(
+        f"file '{last_path}'"
+    )
+
+    slide_list.write_text(
+        "\n".join(lines),
+        encoding="utf-8"
+    )
 
     if vertical:
-        vf="scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,format=yuv420p"
+        video_filter = (
+            "scale=1080:1920:"
+            "force_original_aspect_ratio=increase,"
+            "crop=1080:1920,"
+            "format=yuv420p"
+        )
     else:
-        vf="scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,format=yuv420p"
+        video_filter = (
+            "scale=1280:720:"
+            "force_original_aspect_ratio=increase,"
+            "crop=1280:720,"
+            "format=yuv420p"
+        )
 
-    run([
-        "ffmpeg","-y","-f","concat","-safe","0",
-        "-i",str(lst),"-i",str(audio),
-        "-vf",vf,"-r","25",
-        "-c:v","libx264","-preset","veryfast","-crf","22",
-        "-c:a","aac","-b:a","160k",
-        "-shortest","-movflags","+faststart",str(out)
-    ])
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(slide_list),
+            "-i",
+            str(audio),
+            "-vf",
+            video_filter,
+            "-r",
+            "25",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "22",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            str(output)
+        ]
+    )
+
+
+# ============================================================
+# YOUTUBE BAĞLANTISI
+# ============================================================
 
 def yt():
-    c=Credentials(
+    credentials = Credentials(
         token=None,
-        refresh_token=os.environ["YOUTUBE_REFRESH_TOKEN"],
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=os.environ["GOOGLE_CLIENT_ID"],
-        client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
-        scopes=["https://www.googleapis.com/auth/youtube.upload"]
+        refresh_token=os.environ[
+            "YOUTUBE_REFRESH_TOKEN"
+        ],
+        token_uri=(
+            "https://oauth2.googleapis.com/token"
+        ),
+        client_id=os.environ[
+            "GOOGLE_CLIENT_ID"
+        ],
+        client_secret=os.environ[
+            "GOOGLE_CLIENT_SECRET"
+        ],
+        scopes=[
+            "https://www.googleapis.com/"
+            "auth/youtube.upload"
+        ]
     )
-    return build("youtube","v3",credentials=c,cache_discovery=False)
 
-def upload(api,file,title,desc,tags,thumb=None):
-    body={
-        "snippet":{
-            "title":str(title)[:100],
-            "description":str(desc)[:5000],
-            "tags":[str(x) for x in tags[:30]],
-            "categoryId":"27"
+    return build(
+        "youtube",
+        "v3",
+        credentials=credentials,
+        cache_discovery=False
+    )
+
+
+# ============================================================
+# YOUTUBE YÜKLEME
+# ============================================================
+
+def upload(
+    api,
+    file_path,
+    title,
+    description,
+    tags,
+    thumbnail=None
+):
+    body = {
+        "snippet": {
+            "title": str(title)[:100],
+            "description": str(description)[:5000],
+            "tags": [
+                str(tag)
+                for tag in tags[:30]
+            ],
+            "categoryId": "27"
         },
-        "status":{
-            "privacyStatus":"public",
-            "selfDeclaredMadeForKids":False,
-            "containsSyntheticMedia":True
+        "status": {
+            "privacyStatus": "public",
+            "selfDeclaredMadeForKids": False,
+            "containsSyntheticMedia": True
         }
     }
-    media=MediaFileUpload(
-        str(file),mimetype="video/mp4",
-        resumable=True,chunksize=8*1024*1024
-    )
-    req=api.videos().insert(
-        part="snippet,status",body=body,media_body=media
-    )
-    res=None
-    while res is None:
-        st,res=req.next_chunk()
-        if st:print("YouTube %d%%"%int(st.progress()*100))
-    vid=res["id"]
 
-    if thumb and thumb.exists():
+    media = MediaFileUpload(
+        str(file_path),
+        mimetype="video/mp4",
+        resumable=True,
+        chunksize=8 * 1024 * 1024
+    )
+
+    request = api.videos().insert(
+        part="snippet,status",
+        body=body,
+        media_body=media
+    )
+
+    result = None
+
+    while result is None:
+        status, result = request.next_chunk()
+
+        if status:
+            print(
+                "YouTube %d%%" %
+                int(
+                    status.progress() * 100
+                )
+            )
+
+    video_id = result["id"]
+
+    if (
+        thumbnail
+        and thumbnail.exists()
+    ):
         api.thumbnails().set(
-            videoId=vid,
+            videoId=video_id,
             media_body=MediaFileUpload(
-                str(thumb),mimetype="image/jpeg"
+                str(thumbnail),
+                mimetype="image/jpeg"
             )
         ).execute()
 
-    print("Yüklendi:",vid)
-    return vid
+    print(
+        "Yüklendi:",
+        video_id
+    )
 
-def thumb(src,out):
-    run([
-        "ffmpeg","-y","-i",str(src),
-        "-vf",
-        "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720",
-        "-q:v","7",str(out)
-    ])
-    if out.stat().st_size>1_900_000:
-        run([
-            "ffmpeg","-y","-i",str(out),
-            "-q:v","10",str(out)
-        ])
+    return video_id
+
+
+# ============================================================
+# THUMBNAIL
+# ============================================================
+
+def thumb(source, output):
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source),
+            "-vf",
+            (
+                "scale=1280:720:"
+                "force_original_aspect_ratio=increase,"
+                "crop=1280:720"
+            ),
+            "-q:v",
+            "7",
+            str(output)
+        ]
+    )
+
+    if output.stat().st_size > 1_900_000:
+        run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(output),
+                "-q:v",
+                "10",
+                str(output)
+            ]
+        )
+
+
+# ============================================================
+# ANA PROGRAM
+# ============================================================
 
 def main():
-    print("="*50)
-    print("KAYIP HİKÂYELER OTOMASYONU")
-    print("="*50)
+    print("=" * 55)
+    print("KAYIP HİKÂYELER - YENİ OTOMASYON")
+    print("=" * 55)
+
+    print(
+        "Niş: Gerçek, inanılmaz ve "
+        "merak uyandıran hikâyeler"
+    )
 
     setup()
-    d=plan()
 
-    print("Konu:",d["title"])
-    print("Ana kelime:",wc(d["narration"]))
-    print("Short kelime:",wc(d["short_narration"]))
+    print("Hikâye hazırlanıyor...")
+    data = plan()
 
-    long_audio=OUT/"long.mp3"
-    short_audio=OUT/"short.mp3"
+    print()
+    print("KONU:")
+    print(data["title"])
 
-    tts(d["narration"],long_audio)
-    tts(d["short_narration"],short_audio)
-
-    ld=dur(long_audio)
-    sd=dur(short_audio)
-
-    print("Ana süre:",round(ld,1),"saniye")
-    print("Short:",round(sd,1),"saniye")
-
-    if not 420<=ld<=600:
-        raise RuntimeError(f"Ana video 7-10 dakika dışında: {ld:.1f}s")
-    if not 35<=sd<=75:
-        raise RuntimeError(f"Short süresi dışında: {sd:.1f}s")
-
-    li,lc=images(d["scene_queries"],"long","landscape")
-    si,sc=images(d["short_queries"],"short","portrait")
-
-    lv=OUT/"long.mp4"
-    sv=OUT/"short.mp4"
-
-    make_video(long_audio,li,lv)
-    make_video(short_audio,si,sv,True)
-
-    ti,_=images([d["thumbnail_query"]],"thumbnail","landscape")
-    th=OUT/"thumbnail.jpg"
-    thumb(ti[0],th)
-
-    credits=[]
-    for p in lc+sc:
-        u=p.get("url","")
-        name=p.get("photographer","Pexels photographer")
-        if u:
-            credits.append(f"Photo by {name} on Pexels: {u}")
-
-    desc=(
-        str(d["description"]).strip()+
-        "\n\nBu video özgün senaryo, yapay zekâ destekli "
-        "seslendirme ve Pexels görselleri kullanılarak hazırlanmıştır."
-        "\n\nPexels kaynakları:\n"+
-        "\n".join(dict.fromkeys(credits))+
-        "\n\n#KayıpHikâyeler #Gizem #Belgesel"
+    print()
+    print(
+        "Ana anlatım:",
+        wc(data["narration"]),
+        "kelime"
     )
 
-    api=yt()
+    print(
+        "Short anlatım:",
+        wc(data["short_narration"]),
+        "kelime"
+    )
+
+    long_audio = OUT / "long.mp3"
+    short_audio = OUT / "short.mp3"
+
+    print()
+    print("Ana ses oluşturuluyor...")
+
+    tts(
+        data["narration"],
+        long_audio
+    )
+
+    print("Short sesi oluşturuluyor...")
+
+    tts(
+        data["short_narration"],
+        short_audio
+    )
+
+    long_duration = dur(
+        long_audio
+    )
+
+    short_duration = dur(
+        short_audio
+    )
+
+    print()
+    print(
+        "Ana video:",
+        round(long_duration / 60, 2),
+        "dakika"
+    )
+
+    print(
+        "Short:",
+        round(short_duration, 1),
+        "saniye"
+    )
+
+    if not 360 <= long_duration <= 660:
+        raise RuntimeError(
+            f"Ana video süresi uygun değil: "
+            f"{long_duration:.1f} saniye"
+        )
+
+    if not 25 <= short_duration <= 60:
+        raise RuntimeError(
+            f"Short süresi uygun değil: "
+            f"{short_duration:.1f} saniye"
+        )
+
+    print()
+    print("Ana video görselleri indiriliyor...")
+
+    long_images, long_credits = images(
+        data["scene_queries"],
+        "long",
+        "landscape"
+    )
+
+    print(
+        "Short görselleri indiriliyor..."
+    )
+
+    short_images, short_credits = images(
+        data["short_queries"],
+        "short",
+        "portrait"
+    )
+
+    long_video = OUT / "long.mp4"
+    short_video = OUT / "short.mp4"
+
+    print()
+    print("Ana video oluşturuluyor...")
+
+    make_video(
+        long_audio,
+        long_images,
+        long_video
+    )
+
+    print(
+        "Short video oluşturuluyor..."
+    )
+
+    make_video(
+        short_audio,
+        short_images,
+        short_video,
+        vertical=True
+    )
+
+    print(
+        "Thumbnail görseli indiriliyor..."
+    )
+
+    thumbnail_images, _ = images(
+        [data["thumbnail_query"]],
+        "thumbnail",
+        "landscape"
+    )
+
+    thumbnail = (
+        OUT /
+        "thumbnail.jpg"
+    )
+
+    thumb(
+        thumbnail_images[0],
+        thumbnail
+    )
+
+    credits = []
+
+    for photo in (
+        long_credits +
+        short_credits
+    ):
+        photo_url = photo.get(
+            "url",
+            ""
+        )
+
+        photographer = photo.get(
+            "photographer",
+            "Pexels photographer"
+        )
+
+        if photo_url:
+            credits.append(
+                f"Photo by {photographer} "
+                f"on Pexels: {photo_url}"
+            )
+
+    unique_credits = list(
+        dict.fromkeys(credits)
+    )
+
+    description = (
+        str(data["description"]).strip()
+        +
+        "\n\n"
+        "Bu video özgün senaryo, yapay zekâ destekli "
+        "seslendirme ve Pexels görselleri kullanılarak "
+        "hazırlanmıştır."
+        +
+        "\n\n"
+        "Pexels kaynakları:\n"
+        +
+        "\n".join(unique_credits)
+        +
+        "\n\n"
+        "#KayıpHikayeler #GerçekHikaye "
+        "#Gizem #İnanılmazHikayeler"
+    )
+
+    print()
+    print("YouTube bağlantısı kuruluyor...")
+
+    api = yt()
+
+    print()
+    print("ANA VİDEO YÜKLENİYOR...")
 
     upload(
-        api,lv,d["title"],desc,d["tags"],th
+        api,
+        long_video,
+        data["title"],
+        description,
+        data["tags"],
+        thumbnail
     )
+
+    print()
+    print("SHORT YÜKLENİYOR...")
 
     upload(
-        api,sv,d["short_title"],desc,d["tags"]
+        api,
+        short_video,
+        data["short_title"],
+        description,
+        data["tags"]
     )
 
-    print("="*50)
+    print()
+    print("=" * 55)
     print("OTOMASYON BAŞARIYLA TAMAMLANDI")
-    print("="*50)
+    print("=" * 55)
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
     main()
