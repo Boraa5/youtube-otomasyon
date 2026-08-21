@@ -231,6 +231,87 @@ def gemini(prompt):
 
 
 # ============================================================
+# SORGU DÜZENLEME
+# ============================================================
+
+
+def clean_query(query):
+    query = re.sub(
+        r"[^A-Za-z0-9\s.'&-]",
+        " ",
+        str(query)
+    )
+
+    query = re.sub(
+        r"\s+",
+        " ",
+        query
+    ).strip()
+
+    return query
+
+
+def normalize_queries(
+    queries,
+    count,
+    fallback
+):
+    cleaned = []
+
+    if isinstance(queries, list):
+        for query in queries:
+            query = clean_query(query)
+
+            if query:
+                cleaned.append(query)
+
+    cleaned = cleaned[:count]
+
+    fallback_number = 0
+
+    while len(cleaned) < count:
+        fallback_number += 1
+
+        if fallback_number == 1:
+            cleaned.append(fallback)
+        else:
+            cleaned.append(
+                fallback + " " + str(fallback_number)
+            )
+
+    return cleaned
+
+
+def normalize_tags(tags):
+    cleaned = []
+
+    if isinstance(tags, list):
+        for tag in tags:
+            tag = str(tag).strip()
+
+            if tag and tag not in cleaned:
+                cleaned.append(tag)
+
+    fallback_tags = [
+        "Kayıp Hikâyeler",
+        "Gerçek Hikâyeler",
+        "Gizem",
+        "Belgesel",
+        "İnanılmaz Hikâyeler",
+        "Gizemli Olaylar"
+    ]
+
+    for tag in fallback_tags:
+        if len(cleaned) >= 5:
+            break
+
+        if tag not in cleaned:
+            cleaned.append(tag)
+
+    return cleaned[:15]
+
+
+# ============================================================
 # HİKAYE PLANI
 # ============================================================
 
@@ -273,14 +354,21 @@ belirt.
 
 ANA VİDEO ANLATIMI:
 
-Doğal uzunlukta yaz.
+Hikâyeyi DOĞAL uzunlukta yaz.
 
-Kesin olarak 7, 8 veya 9 dakika doldurmaya çalışma.
-Hikâye 4-5 dakikada güçlü şekilde anlatılabiliyorsa gereksiz yere
-uzatma.
-Konu gerçekten büyük ve detaylıysa daha uzun olabilir.
+Kesin olarak 5, 7, 8 veya 9 dakika doldurmaya çalışma.
 
-Ana anlatım yaklaşık 450 ile 1800 Türkçe kelime arasında olsun.
+Kesin bir kelime sayısına ulaşmak için hikâyeyi gereksiz uzatma.
+
+Olay 3-4 dakikada güçlü biçimde anlatılabiliyorsa öyle bırak.
+Olay daha büyük ve detaylıysa doğal olarak daha uzun anlat.
+
+Önemli olan süre değil, hikâyenin güçlü olmasıdır.
+
+Ana anlatım:
+- Olayı eksik bırakacak kadar kısa olmasın
+- Gereksiz tekrarlarla şişirilmesin
+- Doğal olarak ihtiyaç duyduğu kadar uzun olsun
 
 ÇOK ÖNEMLİ BAŞLANGIÇ:
 
@@ -328,7 +416,8 @@ Short, ana videodaki AYNI GERÇEK HİKÂYEYE bağlı olsun.
 
 Ama ana anlatımın küçük bir kopyası olmasın.
 
-Short yaklaşık 70 ile 180 Türkçe kelime arasında olsun.
+Short doğal uzunlukta olsun.
+Süreyi doldurmak için gereksiz cümle ekleme.
 
 Short ilk cümlede doğrudan en güçlü merakı oluştursun.
 
@@ -374,13 +463,12 @@ Ana video için TAM OLARAK 12 İngilizce sorgu üret.
 
 Short için TAM OLARAK 6 İngilizce sorgu üret.
 
-Her sorgu 2 ile 6 kelime arasında olsun.
-
-Sorgular:
+Her sorgu:
 - İngilizce olmalı
 - Gerçekçi olmalı
 - Pexels'te sonuç bulabilecek kadar genel olmalı
 - Olayın atmosferine uygun olmalı
+- Mümkünse 2 ile 6 kelime arasında olmalı
 
 Karanlık atmosfer gerekiyorsa uygun sorgular kullan.
 Ancak aynı görsel fikrini sürekli tekrar etme.
@@ -428,10 +516,11 @@ thumbnail_query
 KONTROL:
 
 - Hiçbir alan boş olmayacak.
-- narration 450-1800 Türkçe kelime olacak.
-- short_narration 70-180 Türkçe kelime olacak.
-- scene_queries TAM 12 adet olacak.
-- short_queries TAM 6 adet olacak.
+- narration doğal ve yeterli uzunlukta olacak.
+- Kesin kelime sınırı nedeniyle hikâye reddedilmeyecek.
+- short_narration doğal ve güçlü olacak.
+- scene_queries tercihen 12 adet olacak.
+- short_queries tercihen 6 adet olacak.
 - thumbnail_query boş olmayacak.
 - tags en az 5 adet olacak.
 - Short ve ana video aynı gerçek hikâyeye bağlı olacak.
@@ -465,53 +554,95 @@ JSON dışında hiçbir açıklama yazma.
                 "thumbnail_query"
             ]
 
-            if not all(
-                field in data
-                and str(data[field]).strip()
-                for field in required
-            ):
-                raise ValueError(
-                    "Gerekli alanlardan biri boş veya eksik"
-                )
+            for field in required:
+                if field not in data:
+                    raise ValueError(
+                        f"Eksik alan: {field}"
+                    )
 
-            main_words = wc(data["narration"])
-            short_words = wc(data["short_narration"])
+            for field in [
+                "title",
+                "description",
+                "narration",
+                "short_title",
+                "short_narration",
+                "thumbnail_query"
+            ]:
+                if not str(
+                    data[field]
+                ).strip():
+                    raise ValueError(
+                        f"Boş alan: {field}"
+                    )
 
-            if not 450 <= main_words <= 1800:
-                raise ValueError(
-                    f"Ana anlatım kelime sayısı uygun değil: "
-                    f"{main_words}"
-                )
+            data["title"] = str(
+                data["title"]
+            ).strip()
 
-            if not 70 <= short_words <= 180:
-                raise ValueError(
-                    f"Short kelime sayısı uygun değil: "
-                    f"{short_words}"
-                )
+            data["description"] = str(
+                data["description"]
+            ).strip()
 
-            if len(data["scene_queries"]) != 12:
-                raise ValueError(
-                    f"12 ana sahne gerekli. Gelen: "
-                    f"{len(data['scene_queries'])}"
-                )
+            data["narration"] = str(
+                data["narration"]
+            ).strip()
 
-            if len(data["short_queries"]) != 6:
-                raise ValueError(
-                    f"6 short sahnesi gerekli. Gelen: "
-                    f"{len(data['short_queries'])}"
-                )
+            data["short_title"] = str(
+                data["short_title"]
+            ).strip()
 
-            if not str(
+            data["short_narration"] = str(
+                data["short_narration"]
+            ).strip()
+
+            data["thumbnail_query"] = clean_query(
                 data["thumbnail_query"]
-            ).strip():
-                raise ValueError(
-                    "Thumbnail sorgusu boş"
+            )
+
+            if not data["thumbnail_query"]:
+                data["thumbnail_query"] = (
+                    "mysterious investigation"
                 )
 
-            if len(data["tags"]) < 5:
+            # Ana hikâye artık katı bir kelime sınırı
+            # yüzünden reddedilmiyor.
+            main_words = wc(
+                data["narration"]
+            )
+
+            short_words = wc(
+                data["short_narration"]
+            )
+
+            # Sadece gerçekten eksik / bozuk üretimleri reddet.
+            # 165, 278 gibi doğal uzunluklar kesinlikle kabul edilir.
+            if main_words < 120:
                 raise ValueError(
-                    "En az 5 etiket gerekli"
+                    f"Ana anlatım fazla kısa: "
+                    f"{main_words} kelime"
                 )
+
+            if short_words < 25:
+                raise ValueError(
+                    f"Short fazla kısa: "
+                    f"{short_words} kelime"
+                )
+
+            data["scene_queries"] = normalize_queries(
+                data["scene_queries"],
+                12,
+                "mysterious investigation"
+            )
+
+            data["short_queries"] = normalize_queries(
+                data["short_queries"],
+                6,
+                "mysterious discovery"
+            )
+
+            data["tags"] = normalize_tags(
+                data["tags"]
+            )
 
             print("Plan kabul edildi.")
             print(
@@ -550,17 +681,7 @@ JSON dışında hiçbir açıklama yazma.
 
 def pexels(query, orientation, used):
 
-    query = re.sub(
-        r"[^A-Za-z0-9\s.'&-]",
-        " ",
-        str(query)
-    )
-
-    query = re.sub(
-        r"\s+",
-        " ",
-        query
-    ).strip()
+    query = clean_query(query)
 
     if not query:
         query = "documentary"
@@ -701,6 +822,11 @@ def tts(text, output):
     if text:
         chunks.append(text)
 
+    if not chunks:
+        raise RuntimeError(
+            "Seslendirilecek metin boş"
+        )
+
     wavs = []
 
     for number, chunk in enumerate(
@@ -792,6 +918,11 @@ def make_video(
     vertical=False
 ):
 
+    if not image_files:
+        raise RuntimeError(
+            "Video için görsel bulunamadı"
+        )
+
     total_duration = duration(audio)
 
     each_duration = (
@@ -799,10 +930,8 @@ def make_video(
         / len(image_files)
     )
 
-    if each_duration < 2:
-        raise RuntimeError(
-            "Sahne süresi çok kısa"
-        )
+    if each_duration < 1:
+        each_duration = 1
 
     slides = OUT / (
         f"{output.stem}_slides.txt"
@@ -1113,17 +1242,18 @@ def main():
         "saniye"
     )
 
-    # Ana video doğal uzunlukta olabilir.
-    # Gereksiz şekilde 7-9 dakika zorlanmaz.
-    if not 180 <= long_duration <= 900:
+    # Süre artık katı şekilde 5-9 dakikaya
+    # veya 180 saniyeye zorlanmıyor.
+    # Hikâye doğal uzunluğunda kabul edilir.
+    if long_duration < 30:
         raise RuntimeError(
-            "Ana video süresi uygun değil: "
+            "Ana video olağan dışı kısa: "
             + f"{long_duration:.1f} saniye"
         )
 
-    if not 20 <= short_duration <= 90:
+    if short_duration < 10:
         raise RuntimeError(
-            "Short süresi uygun değil: "
+            "Short olağan dışı kısa: "
             + f"{short_duration:.1f} saniye"
         )
 
