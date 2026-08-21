@@ -150,7 +150,8 @@ def gemini_json(prompt, schema, attempts=6):
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=schema,
-                    temperature=0.8
+                    temperature=0.6,
+                    max_output_tokens=8192
                 )
             )
             if not response.text:
@@ -238,39 +239,25 @@ ve kamuoyunca bilinen kişilerin hayatlarında yaşanmış gerçek,
 
 ÖNEMLİ:
 - İftira, uydurma skandal veya doğrulanmamış suçlama üretme.
-- Bir kişi hakkında tartışmalı iddia varsa kesin gerçek gibi anlatma.
+- Tartışmalı iddiaları kesin gerçek gibi anlatma.
 - Özel hayatı gereksiz biçimde hedef alma.
-- Sadece kamuya açık, doğrulanabilir olayları anlat.
-- Aynı "12 yıl kayboldu", "duvarın arkasında bulundu" kalıplarını
-  kullanma.
+- Sadece kamuya açık, doğrulanabilir olayları kullan.
+- Aynı "12 yıl kayboldu", "duvarın arkasında bulundu" gibi kalıpları kullanma.
 - Her videoda farklı olay türü ve farklı başlık yapısı kullan.
 - Arkeoloji veya tarih dersi gibi yazma.
 
 ANA VİDEO:
 Hedef yaklaşık 7 dakikalık doğal Türkçe seslendirme.
-NARRATION en az {MAIN_MIN_WORDS}, en fazla {MAIN_MAX_WORDS} kelime olsun.
-Gereksiz tekrar ve boş uzatma yapma.
-
+NARRATION 850-1000 kelime olsun ve KESİNLİKLE 750 kelimenin altına düşme.
 İlk cümle doğrudan en şaşırtıcı ayrıntıyla başlasın.
-Selamlama, kanal tanıtımı, "bugün sizlere" veya "bu videoda"
-ifadeleri kullanma.
-
-YAPI:
-1. İlk 5 saniyede güçlü merak
-2. Olayın kısa arka planı
-3. Beklenmedik gelişme
-4. Kamuoyunun gördüğü veya bilmediği ayrıntılar
-5. Araştırılabilir gerçekler ve dengeli açıklama
-6. Güçlü dönüm noktası
-7. Sonucun ortaya çıkışı
-8. Kısa ve etkileyici kapanış
+Selamlama, kanal tanıtımı, "bugün sizlere" veya "bu videoda" ifadelerini kullanma.
+Gereksiz tekrar ve boş uzatma yapma.
 
 SHORT:
 Ana videodaki aynı gerçek olaya bağlı olsun.
 Kopya özet olmasın; en çarpıcı noktayı anlatsın.
 İlk 3 saniyede merak oluştursun.
-Doğal olarak yaklaşık 45-60 saniye olacak şekilde
-{SHORT_MIN_WORDS}-{SHORT_MAX_WORDS} kelime arasında olsun.
+90-150 kelime arasında, yaklaşık 45-60 saniyelik doğal konuşma temposunda olsun.
 
 BAŞLIKLAR:
 Her seferinde farklı yapı kullan.
@@ -281,8 +268,6 @@ PEXELS:
 Ana video için tam 12 İngilizce görsel sorgusu.
 Short için tam 6 İngilizce görsel sorgusu.
 Sorgular 2-6 kelime, genel ve gerçekçi olsun.
-Gerçek kişiye ait sonuç bulmak zor olabileceği için gerektiğinde
-olayın atmosferini ve bağlamını gösteren genel görseller kullan.
 
 THUMBNAIL:
 Tek İngilizce, güçlü, genel ve Pexels'te aranabilir sorgu.
@@ -305,7 +290,7 @@ Sadece geçerli JSON döndür.
     data["narration"] = str(data["narration"]).strip()
     data["short_title"] = str(data["short_title"]).strip()
     data["short_narration"] = str(data["short_narration"]).strip()
-    data["thumbnail_query"] = clean_query(data["thumbnail_query"]) or "mysterious celebrity documentary"
+    data["thumbnail_query"] = clean_query(data["thumbnail_query"]) or "celebrity documentary"
     data["tags"] = normalize_tags(data.get("tags", []))
     data["scene_queries"] = normalize_queries(
         data.get("scene_queries", []), 12, "documentary investigation"
@@ -314,116 +299,147 @@ Sadece geçerli JSON döndür.
         data.get("short_queries", []), 6, "mysterious documentary"
     )
 
-    # KRİTİK DÜZELTME:
-    # Kısa senaryo yüzünden yeni hikâye üretip konuyu değiştirme.
-    # Aynı hikâyeyi tek bir devam çağrısıyla genişlet.
-    words = wc(data["narration"])
-    if words < MAIN_MIN_WORDS:
-        print(
-            f"Ana senaryo {words} kelime. "
-            "Aynı hikâye korunarak otomatik genişletiliyor..."
-        )
+    main_words = wc(data["narration"])
+    if main_words < MAIN_MIN_WORDS:
+        print(f"Ana senaryo {main_words} kelime. Aynı hikâye tamamlanıyor...")
         data["narration"] = expand_main_story(data["narration"], data["title"])
 
-    # Short kısa gelirse sadece aynı olayı genişlet.
     short_words = wc(data["short_narration"])
     if short_words < SHORT_MIN_WORDS:
-        print(
-            f"Short {short_words} kelime. "
-            "Aynı olay korunarak genişletiliyor..."
-        )
+        print(f"Short {short_words} kelime. Aynı olay tamamlanıyor...")
         data["short_narration"] = expand_short_story(
             data["short_narration"], data["title"], data["narration"]
         )
 
-    # Son güvenlik: genişletme başarısızsa rastgele yeniden konu üretme.
     main_words = wc(data["narration"])
     short_words = wc(data["short_narration"])
 
     if main_words < MAIN_MIN_WORDS:
         raise RuntimeError(
-            f"Ana senaryo yeterince uzatılamadı: {main_words} kelime."
+            f"Ana senaryo hedefe ulaşamadı: {main_words} kelime."
         )
     if main_words > MAIN_MAX_WORDS:
-        print(f"Uyarı: Ana senaryo {main_words} kelime, kabul ediliyor.")
+        print(f"Ana senaryo {main_words} kelime; üst sınır aşıldı ama kabul edildi.")
     if short_words < SHORT_MIN_WORDS:
-        raise RuntimeError(
-            f"Short yeterince uzatılamadı: {short_words} kelime."
-        )
+        raise RuntimeError(f"Short hedefe ulaşamadı: {short_words} kelime.")
 
     print("Plan kabul edildi.")
     print("Ana kelime:", main_words)
     print("Short kelime:", short_words)
     return data
 
-
-def expand_main_story(narration, title):
+def _continuation_json(prompt, field):
     schema = {
         "type": "OBJECT",
-        "properties": {"narration": {"type": "STRING"}},
-        "required": ["narration"]
+        "properties": {field: {"type": "STRING"}},
+        "required": [field]
     }
+    data = gemini_json(prompt, schema)
+    text = str(data.get(field, "")).strip()
+    if not text:
+        raise RuntimeError("Gemini devam metni boş döndü")
+    return text
 
-    prompt = f"""
-Aşağıdaki Türkçe YouTube senaryosunu AYNI GERÇEK HİKÂYE ve AYNI KİŞİ
-üzerinden genişlet.
+
+def expand_main_story(narration, title):
+    text = str(narration).strip()
+
+    # En fazla 3 ek çağrı: kota tüketimini azaltır, her çağrıda yeterli miktarda devam ister.
+    for round_no in range(1, 4):
+        words = wc(text)
+        if words >= MAIN_MIN_WORDS:
+            return text
+
+        remaining = MAIN_MIN_WORDS - words
+        target_add = max(remaining + 80, 280)
+        print(
+            f"Ana senaryo genişletme {round_no}/3: "
+            f"{words} kelime, en az {remaining} kelime eksik..."
+        )
+
+        prompt = f"""
+Aşağıdaki Türkçe YouTube senaryosu kısa kaldı.
+AYNI gerçek hikâyeyi, AYNI kişiyi ve AYNI olay zincirini koru.
 
 Başlık: {title}
 
-KESİNLİKLE yeni konu seçme.
-KESİNLİKLE hikâyeyi baştan farklı olayla yazma.
-Mevcut girişteki merak duygusunu koru.
-Eksik arka planı, olayların sırasını, doğrulanabilir bağlamı ve
-önemli dönüm noktalarını doğal biçimde geliştir.
-
+Sadece mevcut metnin BİTTİĞİ YERDEN DEVAMINI yaz.
+KESİNLİKLE girişten yeniden başlama.
+KESİNLİKLE önceki cümleleri tekrar etme.
+KESİNLİKLE yeni konu veya yeni kişi seçme.
 Uydurma bilgi, tarih, alıntı, suçlama veya olay ekleme.
-Tartışmalı bilgi varsa kesin gerçek gibi yazma.
+Doğrulanabilir kamuya açık bağlamı, olayların sırasını, dönüm noktalarını
+ve sonucun anlamını doğal biçimde ayrıntılandır.
 
-Sonuçta TEK PARÇA, doğal, akıcı ve yaklaşık 750-1050 kelimelik
-bir senaryo ver.
+BU TURDA EN AZ {target_add} kelimelik YENİ devam üret.
+Başlık, numara, "devam" sözü veya açıklama yazma.
 
 Mevcut senaryo:
 ---
-{narration}
+{text}
 ---
 
 Sadece JSON döndür.
 """
-    data = gemini_json(prompt, schema)
-    return str(data["narration"]).strip()
+        addition = _continuation_json(prompt, "narration")
+        addition = addition.strip()
+
+        # Model eski metnin büyük bölümünü yeniden yazarsa kopyayı ekleme.
+        if addition in text or wc(addition) < 40:
+            print("Geçersiz/kısa devam geldi, yeniden deneniyor...")
+            continue
+
+        text = text.rstrip() + "\n\n" + addition
+
+    return text.strip()
 
 
 def expand_short_story(short_text, title, main_narration):
-    schema = {
-        "type": "OBJECT",
-        "properties": {"short_narration": {"type": "STRING"}},
-        "required": ["short_narration"]
-    }
+    text = str(short_text).strip()
 
-    prompt = f"""
-Aşağıdaki kısa YouTube Shorts metnini, ana videodaki AYNI gerçek olayı
-koruyarak 90-150 kelimeye tamamla.
+    for round_no in range(1, 3):
+        words = wc(text)
+        if words >= SHORT_MIN_WORDS:
+            return text
+
+        remaining = SHORT_MIN_WORDS - words
+        target_add = max(remaining + 15, 45)
+        print(
+            f"Short genişletme {round_no}/2: "
+            f"{words} kelime, en az {remaining} kelime eksik..."
+        )
+
+        prompt = f"""
+Aşağıdaki YouTube Shorts metni kısa kaldı.
+AYNI gerçek olayı ve AYNI kişiyi koru.
 
 Başlık: {title}
 
+Sadece mevcut Short'un BİTTİĞİ YERDEN DEVAMINI yaz.
+Önceki cümleleri tekrar etme.
 Yeni olay, yeni kişi veya uydurma bilgi ekleme.
-İlk cümledeki merakı koru.
-45-60 saniyelik doğal Türkçe konuşma temposuna uygun yaz.
+BU TURDA EN AZ {target_add} kelimelik doğal yeni devam üret.
+45-60 saniyelik meraklı belgesel anlatım tonunu koru.
 
 Mevcut Short:
 ---
-{short_text}
+{text}
 ---
 
 Ana hikâye bağlamı:
 ---
-{main_narration[:7000]}
+{main_narration[:9000]}
 ---
 
 Sadece JSON döndür.
 """
-    data = gemini_json(prompt, schema)
-    return str(data["short_narration"]).strip()
+        addition = _continuation_json(prompt, "short_narration").strip()
+        if addition in text or wc(addition) < 10:
+            print("Geçersiz/kısa Short devamı geldi, yeniden deneniyor...")
+            continue
+        text = text.rstrip() + "\n\n" + addition
+
+    return text.strip()
 
 
 # ============================================================
@@ -827,3 +843,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
