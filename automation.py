@@ -14,27 +14,27 @@ from googleapiclient.http import MediaFileUpload
 
 
 # ============================================================
-# KAYIP HİKAYELER - YENİ OTOMASYON
-#
-# NİŞ:
-# Gerçek, inanılmaz, merak uyandıran kaybolma / bulunma /
-# yıllar sonra ortaya çıkma / gizli kalmış gerçek hikâyeler
+# KAYIP HİKAYELER
+# TÜRKİYE'DE KONUŞULAN ÜNLÜLER VE FENOMENLER
 #
 # ANA VİDEO:
-# Doğal uzunlukta gerçek hikâye
+# Gerçek, doğrulanabilir, merak uyandıran hikâyeler
+# Hedef süre: yaklaşık 6-8 dakika
 #
 # SHORT:
-# Aynı hikâyenin en güçlü ve merak uyandıran anı
+# Aynı hikâyenin en güçlü merak anı
+# Hedef süre: yaklaşık 25-45 saniye
 #
-# KAPAK:
-# Konuya özel, güçlü, gizemli ve merak uyandıran görsel
+# TEKRAR KONTROLÜ:
+# Son kullanılan kişi, konu ve başlıklar kaydedilir.
+# Aynı kişi ve aynı olay sürekli tekrar seçilmez.
 # ============================================================
 
 
 OUT = Path("work")
 OUT.mkdir(exist_ok=True)
 
-HISTORY_FILE = OUT / "history.json"
+HISTORY_FILE = OUT / "topic_history.json"
 
 GEMINI = os.environ["GEMINI_API_KEY"]
 PEXELS = os.environ["PEXELS_API_KEY"]
@@ -44,6 +44,11 @@ MODEL = "gemini-3.1-flash-lite"
 client = genai.Client(api_key=GEMINI)
 
 
+# ============================================================
+# TÜRKÇE SES MODELİ
+# ============================================================
+
+
 PIPER = OUT / "tr_TR-dfki-medium.onnx"
 PIPER_CFG = OUT / "tr_TR-dfki-medium.onnx.json"
 
@@ -51,6 +56,24 @@ PIPER_URL = (
     "https://huggingface.co/rhasspy/piper-voices/"
     "resolve/v1.0.0/tr/tr_TR/dfki/medium/"
 )
+
+
+# ============================================================
+# GENEL AYARLAR
+# ============================================================
+
+
+MAIN_MIN_WORDS = 850
+MAIN_MAX_WORDS = 1250
+
+SHORT_MIN_WORDS = 60
+SHORT_MAX_WORDS = 115
+
+MAIN_MIN_SECONDS = 300
+MAIN_MAX_SECONDS = 540
+
+SHORT_MIN_SECONDS = 22
+SHORT_MAX_SECONDS = 55
 
 
 # ============================================================
@@ -131,6 +154,48 @@ def clean_query(query):
     return query
 
 
+def clean_text(text):
+    return re.sub(
+        r"\s+",
+        " ",
+        str(text)
+    ).strip()
+
+
+def extract_json(text):
+    text = str(text).strip()
+
+    text = re.sub(
+        r"^```(?:json)?",
+        "",
+        text,
+        flags=re.I
+    )
+
+    text = re.sub(
+        r"```$",
+        "",
+        text
+    ).strip()
+
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    start = text.find("{")
+    end = text.rfind("}")
+
+    if start >= 0 and end > start:
+        return json.loads(
+            text[start:end + 1]
+        )
+
+    raise ValueError(
+        "Gemini geçerli JSON döndürmedi"
+    )
+
+
 def load_history():
     if not HISTORY_FILE.exists():
         return []
@@ -143,7 +208,7 @@ def load_history():
         )
 
         if isinstance(data, list):
-            return data[-30:]
+            return data
 
     except Exception:
         pass
@@ -151,15 +216,13 @@ def load_history():
     return []
 
 
-def save_history(title):
+def save_history(item):
     history = load_history()
 
-    title = str(title).strip()
+    history.append(item)
 
-    if title:
-        history.append(title)
-
-    history = history[-30:]
+    # Son 60 kaydı sakla.
+    history = history[-60:]
 
     HISTORY_FILE.write_text(
         json.dumps(
@@ -171,6 +234,38 @@ def save_history(title):
     )
 
 
+def history_summary(history):
+    if not history:
+        return "Henüz kullanılmamış konu yok."
+
+    lines = []
+
+    for item in history[-30:]:
+        person = clean_text(
+            item.get("person", "")
+        )
+
+        topic = clean_text(
+            item.get("topic", "")
+        )
+
+        title = clean_text(
+            item.get("title", "")
+        )
+
+        if person or topic or title:
+            lines.append(
+                f"- Kişi: {person} | "
+                f"Konu: {topic} | "
+                f"Başlık: {title}"
+            )
+
+    if not lines:
+        return "Henüz kullanılmamış konu yok."
+
+    return "\n".join(lines)
+
+
 def normalize_queries(
     queries,
     count,
@@ -179,9 +274,7 @@ def normalize_queries(
     cleaned = []
 
     if isinstance(queries, list):
-
         for query in queries:
-
             query = clean_query(query)
 
             if (
@@ -195,7 +288,6 @@ def normalize_queries(
     fallback_number = 0
 
     while len(cleaned) < count:
-
         fallback_number += 1
 
         if fallback_number == 1:
@@ -217,10 +309,8 @@ def normalize_tags(tags):
     cleaned = []
 
     if isinstance(tags, list):
-
         for tag in tags:
-
-            tag = str(tag).strip()
+            tag = clean_text(tag)
 
             if (
                 tag
@@ -231,17 +321,15 @@ def normalize_tags(tags):
     fallback_tags = [
         "Kayıp Hikâyeler",
         "Gerçek Hikâyeler",
-        "Gizem",
-        "Gerçek Olaylar",
-        "Belgesel",
-        "İnanılmaz Hikâyeler",
-        "Gizemli Olaylar",
-        "Çözülen Gizemler"
+        "Ünlülerin Hikâyeleri",
+        "Türkiye",
+        "Fenomenler",
+        "Perde Arkası",
+        "Belgesel"
     ]
 
     for tag in fallback_tags:
-
-        if len(cleaned) >= 5:
+        if len(cleaned) >= 7:
             break
 
         if tag not in cleaned:
@@ -256,7 +344,6 @@ def normalize_tags(tags):
 
 
 def setup():
-
     print(
         "Türkçe ses modeli kontrol ediliyor..."
     )
@@ -281,99 +368,26 @@ def setup():
 
 
 # ============================================================
-# GEMINI
+# GEMINI İSTEKLERİ
 # ============================================================
 
 
-def gemini(prompt):
-
+def gemini_json(
+    prompt,
+    schema,
+    temperature=0.7
+):
     last_error = None
 
     for attempt in range(5):
-
         try:
-
-            response = (
-                client.models.generate_content(
-                    model=MODEL,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type=(
-                            "application/json"
-                        ),
-                        response_schema={
-                            "type": "OBJECT",
-                            "properties": {
-
-                                "title": {
-                                    "type": "STRING"
-                                },
-
-                                "description": {
-                                    "type": "STRING"
-                                },
-
-                                "tags": {
-                                    "type": "ARRAY",
-                                    "items": {
-                                        "type": "STRING"
-                                    }
-                                },
-
-                                "narration": {
-                                    "type": "STRING"
-                                },
-
-                                "short_title": {
-                                    "type": "STRING"
-                                },
-
-                                "short_narration": {
-                                    "type": "STRING"
-                                },
-
-                                "scene_queries": {
-                                    "type": "ARRAY",
-                                    "items": {
-                                        "type": "STRING"
-                                    }
-                                },
-
-                                "short_queries": {
-                                    "type": "ARRAY",
-                                    "items": {
-                                        "type": "STRING"
-                                    }
-                                },
-
-                                "thumbnail_query": {
-                                    "type": "STRING"
-                                },
-
-                                "thumbnail_queries": {
-                                    "type": "ARRAY",
-                                    "items": {
-                                        "type": "STRING"
-                                    }
-                                }
-                            },
-
-                            "required": [
-                                "title",
-                                "description",
-                                "tags",
-                                "narration",
-                                "short_title",
-                                "short_narration",
-                                "scene_queries",
-                                "short_queries",
-                                "thumbnail_query",
-                                "thumbnail_queries"
-                            ]
-                        },
-
-                        temperature=0.9
-                    )
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=schema,
+                    temperature=temperature
                 )
             )
 
@@ -382,377 +396,449 @@ def gemini(prompt):
             )
 
         except Exception as error:
-
             last_error = str(error)
 
             print(
-                "Gemini hata:",
+                "Gemini JSON hata:",
                 last_error
             )
 
-            if (
-                "429" in last_error
-                or "RESOURCE_EXHAUSTED"
-                in last_error
-            ):
+            wait = 8 * (
+                attempt + 1
+            )
 
-                wait = 20 * (
-                    attempt + 1
-                )
+            print(
+                f"{wait} saniye bekleniyor..."
+            )
 
-                print(
-                    f"Gemini sınırı. "
-                    f"{wait} saniye bekleniyor..."
-                )
-
-                time.sleep(wait)
-
-            else:
-
-                if attempt < 4:
-                    time.sleep(5)
+            time.sleep(wait)
 
     raise RuntimeError(
-        "Gemini içerik üretilemedi: "
+        "Gemini JSON üretilemedi: "
+        + str(last_error)
+    )
+
+
+def grounded_research(prompt):
+    last_error = None
+
+    for attempt in range(5):
+        try:
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    tools=[
+                        types.Tool(
+                            google_search=types.GoogleSearch()
+                        )
+                    ],
+                    temperature=0.35
+                )
+            )
+
+            text = str(
+                response.text
+            ).strip()
+
+            if not text:
+                raise RuntimeError(
+                    "Araştırma sonucu boş"
+                )
+
+            return text
+
+        except Exception as error:
+            last_error = str(error)
+
+            print(
+                "Araştırma hata:",
+                last_error
+            )
+
+            time.sleep(
+                8 * (attempt + 1)
+            )
+
+    raise RuntimeError(
+        "Gerçek olay araştırılamadı: "
         + str(last_error)
     )
 
 
 # ============================================================
-# HİKAYE PLANI
+# GERÇEK KONU ARAŞTIRMA
+# ============================================================
+
+
+def research_topic(history):
+
+    previous = history_summary(
+        history
+    )
+
+    prompt = f"""
+Türkiye'de kamuoyunda konuşulmuş gerçek ve doğrulanabilir bir
+ünlü, sanatçı, oyuncu, şarkıcı veya sosyal medya fenomeni hikâyesi
+araştır.
+
+AMAÇ:
+"Kayıp Hikâyeler" YouTube kanalı için güçlü merak duygusu taşıyan,
+belgesel gibi anlatılabilecek gerçek bir hikâye bulmak.
+
+ÖNCELİK VER:
+- Bir anda herkesin konuştuğu gerçek olaylar
+- Şöhret yolunda yaşanmış şaşırtıcı gerçekler
+- Kamuoyunda büyük merak uyandıran dönüm noktaları
+- Yıllar sonra açıklığa kavuşan gerçek olaylar
+- Kariyeri bir gecede değişen isimler
+- Kayıp, bulunma, ortadan kaybolma gibi gerçek olaylar
+- Herkesin bildiğini sandığı fakat perde arkasında başka gerçekler
+- Bir açıklama, görüntü veya belgeyle ortaya çıkan gerçekler
+- Türkiye'de geniş biçimde haber olmuş olaylar
+
+KESİNLİKLE YAPMA:
+- Söylentiyi gerçek gibi sunma
+- Aldatma, suç, uyuşturucu, cinsel hayat veya benzeri hassas
+  iddiaları doğrulanmadan anlatma
+- Özel hayatı gereksiz şekilde kurcalama
+- İftira niteliğinde iddia üretme
+- Sadece magazin kavgasını konu seçme
+- Aynı kişinin hayatını tekrar tekrar seçme
+
+Aşağıdaki daha önce kullanılan konuları TEKRAR SEÇME:
+
+{previous}
+
+Google Search ile araştırma yap.
+
+Sonra SADECE aşağıdaki yapıda JSON döndür:
+
+{{
+  "person": "kişinin adı",
+  "topic": "tek cümlelik gerçek olay",
+  "topic_key": "kişiyi ve olayı ayırt eden kısa anahtar",
+  "why_interesting": "neden güçlü merak oluşturduğu",
+  "verified_facts": [
+    "doğrulanabilir gerçek 1",
+    "doğrulanabilir gerçek 2",
+    "doğrulanabilir gerçek 3",
+    "doğrulanabilir gerçek 4"
+  ],
+  "timeline": [
+    "önemli olay sırası 1",
+    "önemli olay sırası 2",
+    "önemli olay sırası 3"
+  ],
+  "avoid_claims": [
+    "kanıtsız veya hassas şekilde anlatılmaması gereken iddia"
+  ],
+  "source_notes": [
+    "araştırmada kullanılan güvenilir kaynak özeti"
+  ]
+}}
+
+Eğer yeterince güvenilir gerçek bulamazsan başka kişi ve başka
+olay araştır.
+
+Sadece JSON döndür.
+"""
+
+    text = grounded_research(
+        prompt
+    )
+
+    data = extract_json(text)
+
+    required = [
+        "person",
+        "topic",
+        "topic_key",
+        "why_interesting",
+        "verified_facts",
+        "timeline",
+        "avoid_claims",
+        "source_notes"
+    ]
+
+    for field in required:
+        if field not in data:
+            raise ValueError(
+                "Araştırmada eksik alan: "
+                + field
+            )
+
+    data["person"] = clean_text(
+        data["person"]
+    )
+
+    data["topic"] = clean_text(
+        data["topic"]
+    )
+
+    data["topic_key"] = clean_text(
+        data["topic_key"]
+    )
+
+    if (
+        not data["person"]
+        or not data["topic"]
+        or not data["topic_key"]
+    ):
+        raise ValueError(
+            "Araştırma konusu eksik"
+        )
+
+    return data
+
+
+# ============================================================
+# SENARYO PLANI
 # ============================================================
 
 
 def plan():
 
-    previous_titles = load_history()
+    history = load_history()
 
-    previous_text = "\n".join(
-        "- " + title
-        for title in previous_titles[-20:]
-    )
+    last_error = None
 
-    if not previous_text:
-        previous_text = (
-            "- Henüz geçmiş video yok"
-        )
+    for attempt in range(8):
 
-    prompt = f"""
+        try:
+            print(
+                f"Konu araştırılıyor... "
+                f"{attempt + 1}/8"
+            )
+
+            research = research_topic(
+                history
+            )
+
+            previous = history_summary(
+                history
+            )
+
+            prompt = f"""
 "Kayıp Hikâyeler" adlı Türkçe YouTube kanalı için
-TEK bir gerçek hikâye hazırla.
+TEK bir ana video ve ona bağlı TEK bir Short hazırla.
 
-KANALIN NİŞİ:
+KANALIN YENİ KONSEPTİ:
 
-Gerçek hayatta yaşanmış,
-inanılmaz,
-merak uyandıran,
-gizemli ve doğrulanabilir olaylar.
+Türkiye'de kamuoyunda konuşulmuş ünlüler, sanatçılar, oyuncular,
+şarkıcılar ve fenomenlerin GERÇEK, doğrulanabilir ve merak
+uyandıran hikâyeleri.
 
-ÖNCELİKLİ KONU TÜRLERİ:
+Bu bir sıradan magazin kanalı değildir.
 
-- Yıllarca kayıp kalan insanların bulunması
-- Beklenmedik şekilde ortaya çıkan kişiler
-- Yıllarca çözülemeyen gerçek gizemler
-- Herkesin gözünün önünde olup fark edilmeyen gerçekler
-- Kayıp bir nesnenin veya önemli şeyin bulunması
-- Gizli kalmış olayların yıllar sonra ortaya çıkması
-- Terk edilmiş bir yerde bulunan önemli bir gerçek
-- Kaybolmuş veya unutulmuş bir şeyin yeniden ortaya çıkması
-- Gerçek ve belgelenmiş şaşırtıcı olaylar
+Anlatım tarzı:
+Sinematik, güçlü, merak uyandırıcı, belgesel gibi ve doğal.
 
-ÖNEMLİ:
+ARAŞTIRILMIŞ KONU:
 
-Sadece arkeoloji ve tarih anlatma.
+Kişi:
+{research["person"]}
 
-Her video "12 yıl kayıptı",
-"yıllarca kayboldu",
-"polis onu bulamadı"
-gibi aynı başlık ve olay kalıbına sıkışmasın.
+Ana olay:
+{research["topic"]}
 
-Her videoda konu türünü,
-olayın merkezindeki kişiyi,
-olayın dönemini,
-gizemin şeklini ve
-başlık yapısını mümkün olduğunca değiştir.
+Neden ilgi çekici:
+{research["why_interesting"]}
 
-Aşağıdaki daha önce kullanılan başlıklara
-aynı veya çok benzer bir hikâye üretme:
+Doğrulanabilir gerçekler:
+{json.dumps(research["verified_facts"], ensure_ascii=False)}
 
-{previous_text}
+Olay sırası:
+{json.dumps(research["timeline"], ensure_ascii=False)}
 
-HİKÂYE GERÇEK OLMALI.
+Kaçınılacak iddialar:
+{json.dumps(research["avoid_claims"], ensure_ascii=False)}
 
-Uydurma kişi,
-tarih,
-sayı,
-yer,
-kanıt veya olay kullanma.
+Kaynak notları:
+{json.dumps(research["source_notes"], ensure_ascii=False)}
 
-Belirsiz ayrıntıları kesin gerçek gibi anlatma.
+ÖNCEKİ VİDEOLAR:
+Aşağıdaki kişi, olay, başlık ve konu kalıplarını tekrar etme:
 
-Tartışmalı bilgiler varsa
-bunu dengeli biçimde belirt.
+{previous}
+
+ÇOK ÖNEMLİ:
+
+Sadece araştırmada verilen doğrulanabilir gerçeklere dayan.
+
+Araştırmada olmayan bir bilgiyi kesin gerçek gibi ekleme.
+
+Söylenti, dedikodu ve kanıtsız iddiaları gerçek gibi anlatma.
+
+"İddia edildi" diyerek kanıtsız bir bilgiyi uzatma.
+
+Hikâyenin gücü gerçek olayın kendisinden gelsin.
 
 ============================================================
 
-ANA VİDEO
+ANA VİDEO ANLATIMI
 
-Hikâyeyi doğal uzunlukta anlat.
+Ana video yaklaşık 6-8 dakikalık doğal bir anlatım olacak.
 
-Kesin olarak
-5,
-7,
-8 veya
-9 dakika doldurmaya çalışma.
+NARRATION yaklaşık 850-1250 Türkçe kelime arasında olsun.
 
-Hikâyeyi gereksiz tekrarlarla uzatma.
+Kesin süre doldurmak için boş tekrar yapma.
 
-Ama olayın önemli kısmını da
-eksik bırakacak kadar kısa kesme.
+Ancak 1-2 dakikalık kısa bir metin de üretme.
 
-İlk cümle doğrudan olayın
-en şaşırtıcı veya gizemli kısmıyla başlasın.
+İlk 5 saniye:
+Doğrudan en şaşırtıcı veya en merak uyandıran gerçekle başla.
 
-Şunlarla başlama:
+Selamlama yok.
+Kanal tanıtımı yok.
+"Bugün sizlere" yok.
+"Bu videoda" yok.
 
-"Merhaba"
-"Bugün sizlere"
-"Bu videoda"
-"Kanalımıza hoş geldiniz"
+İLK CÜMLEDE KİŞİNİN ADINI HEMEN SÖYLEMEK ZORUNDA DEĞİLSİN.
 
-İLK 5 SANİYE:
+Önce merak oluşturabilirsin.
 
-İzleyiciyi durduracak kadar güçlü
-bir merak oluştur.
+Örnek mantık:
 
-İLK 15 SANİYE:
+"Türkiye onu bir gecede konuşmaya başladı.
+Ama herkesin gördüğü olayın arkasında, çok daha önce başlayan
+başka bir hikâye vardı."
 
-İzleyicinin zihninde
-büyük bir soru oluşmalı.
+Bu sadece anlatım mantığıdır.
+Aynısını kullanma.
 
-Yapı doğal olarak şunları içerebilir:
+YAPI:
 
-- Güçlü açılış
-- Kısa arka plan
-- Gizemin başlaması
-- Arama veya araştırma
-- Gözden kaçan ayrıntılar
-- Beklenmedik dönüm noktası
-- Güçlü kanıtlar
-- Gerçeğin nasıl ortaya çıktığı
-- Kısa ve etkili kapanış
+1. Şok veya güçlü merakla açılış
+2. İzleyicinin bilmediği veya unutmuş olabileceği arka plan
+3. Olayın başlaması
+4. Gerilim veya merakın yükselmesi
+5. Herkesin dikkatini çeken dönüm noktası
+6. Perde arkasındaki doğrulanabilir gerçekler
+7. Olayın nasıl geliştiği
+8. Sonuç
+9. Kısa ve etkileyici kapanış
 
-Aynı bilgiyi tekrar tekrar yazma.
+Her 20-40 saniyede yeni bir bilgi, soru veya gelişme gelsin.
 
-Hikâye boyunca yeni bilgi,
-yeni ayrıntı ve
-yeni merak unsuru ver.
+Aynı bilgiyi farklı cümlelerle tekrar etme.
+
+"Yıllarca sustu",
+"kimse bilmiyordu",
+"herkes şok oldu",
+"12 yıl kayboldu"
+gibi kalıpları her videoda otomatik kullanma.
+
+Bu hikâyeye özel, özgün cümleler kur.
 
 ============================================================
 
 SHORT
 
-Short,
-ANA VİDEODAKİ AYNI GERÇEK HİKÂYEYE bağlı olacak.
+Short ana videodaki AYNI GERÇEK HİKÂYEYE bağlı olacak.
 
-Ama ana videonun küçük bir özeti olmayacak.
+Ama ana videonun kopyası olmayacak.
 
-Hikâyenin en güçlü,
-en şaşırtıcı veya
-en merak uyandırıcı bölümünü seç.
+SHORT NARRATION yaklaşık 60-115 kelime olsun.
 
-Short çok kısa kalmamalı.
+Hedef:
+Yaklaşık 25-45 saniye.
 
-Yaklaşık
-30 ile 55 saniyelik
-doğal bir anlatım hedefle.
+İlk 2 saniyede güçlü merak oluştur.
 
-Bunun için genellikle
-yaklaşık 70 ile 140 Türkçe kelime uygundur.
+İlk cümle mümkün olduğunca güçlü olsun.
 
-İlk 3 saniye çok güçlü olmalı.
+Short:
+- Tek bir güçlü anı anlatabilir
+- En şaşırtıcı dönüm noktasını kullanabilir
+- Sonucu tamamen vermek zorunda değildir
+- İzleyiciyi ana hikâyeyi merak etmeye yöneltebilir
 
-İlk cümle izleyicinin
-hemen devamını merak etmesini sağlamalı.
-
-Gereksiz cümlelerle süre doldurma.
-
-Ama 10-15 saniyelik
-çok kısa bir Short da üretme.
+Ancak yanıltıcı veya yalan bilgi kullanma.
 
 ============================================================
 
-BAŞLIK
+BAŞLIK KURALLARI
 
 Ana video başlığı:
+- 45-85 karakter arası tercih et
+- Kişiye ve bu olaya özel olsun
+- Önceki başlıklara benzemesin
+- Sürekli sayı kullanma
+- Sürekli "yıllarca", "sır", "neden sustu" kalıbını kullanma
+- Clickbait olabilir ama yalan söyleme
 
-- Kısa
-- Güçlü
-- Merak uyandırıcı
-- Gerçeğe uygun
+Başlık çeşitliliği kullan:
 
-olmalı.
+Bazen:
+- Bir olay üzerinden
 
-Clickbait olabilir,
-ama yalan söyleme.
+Bazen:
+- Beklenmedik dönüm noktası üzerinden
 
-Her seferinde aynı kalıbı kullanma.
+Bazen:
+- Kişinin hayatındaki büyük değişim üzerinden
 
-Özellikle sürekli:
+Bazen:
+- Herkesin konuştuğu bir gece veya an üzerinden
 
-"12 Yıl Kayıptı"
-"Yıllarca Kayıptı"
-"Polis Onu Bulamadı"
+Bazen:
+- Ortaya çıkan gerçek üzerinden
 
-gibi benzer başlıklar üretme.
-
-Olay neyi ilginç yapıyorsa
-başlığı onun üzerinden kur.
-
-Başlık türlerini değiştir.
-
-Örneğin bazen:
-
-- Beklenmedik bir keşif
-- Gizli bir ayrıntı
-- Yanlış anlaşılan bir olay
-- Yıllar sonra bulunan bir kanıt
-- Herkesin gözünden kaçan bir gerçek
-- Ortaya çıkan gizli bağlantı
-
-üzerinden merak oluştur.
-
-Ama bunları da sürekli aynı şekilde kullanma.
+Her videoda aynı başlık yapısını kullanma.
 
 ============================================================
 
-VİDEO KAPAK RESMİ - ÇOK ÖNEMLİ
+PEXELS GÖRSELLERİ
 
-Kapak görseli sıradan,
-genel veya rastgele olmamalı.
+Ana video için TAM OLARAK 12 İngilizce sorgu üret.
 
-Kapak,
-hikâyenin EN GÜÇLÜ GÖRSEL ANI olmalı.
-
-İzleyici kapağa baktığında:
-
-"Burada ne olmuş?"
-"Bu neyin resmi?"
-"Devamında ne çıkacak?"
-
-diye merak etmeli.
-
-Kapak için sadece:
-
-missing person
-police investigation
-old house
-
-gibi sürekli kullanılan sıradan
-ve genel sorgular üretme.
-
-HİKÂYEYE ÖZEL BİR GÖRSEL DURUM seç.
-
-Örneğin olayda:
-
-- Kapalı bir kapının arkasında sır varsa
-  kapak buna odaklansın.
-
-- Ormanda bulunan bir kanıt varsa
-  kapak buna odaklansın.
-
-- Eski bir fotoğraf olayı çözdüyse
-  kapak fotoğrafın gizemini yansıtsın.
-
-- Terk edilmiş bir yerde bir şey bulunduysa
-  o anın atmosferini yansıtsın.
-
-- Önemli bir nesne varsa
-  nesne kapakta merkezi unsur olsun.
-
-- Bir araştırma sırasında beklenmedik
-  bir ayrıntı ortaya çıktıysa
-  kapak o ayrıntının etrafındaki
-  gizemi yansıtsın.
-
-KAPAKTA YAZI OLMAYACAK.
-
-Kapak görselinde mümkünse:
-
-- Tek güçlü ana unsur
-- Net görsel odak
-- Gizemli veya dramatik atmosfer
-- İnsan varsa yüz veya hareketin anlaşılması
-- Gereksiz kalabalık olmaması
-
-sağlansın.
-
-thumbnail_query:
-
-Hikâyeye özel
-EN GÜÇLÜ tek İngilizce Pexels sorgusu.
-
-thumbnail_queries:
-
-Aynı kapak fikrini destekleyen
-TAM OLARAK 5 farklı
-güçlü İngilizce alternatif sorgu.
-
-Bunlar birbirinin aynısı olmasın.
-
-Sorgular Pexels'te sonuç bulunabilecek kadar
-gerçekçi ve genel olmalı.
-
-============================================================
-
-PEXELS SORGULARI
-
-Ana video için
-12 İngilizce sahne sorgusu üret.
-
-Short için
-6 İngilizce sahne sorgusu üret.
+Short için TAM OLARAK 6 İngilizce sorgu üret.
 
 Her sorgu:
-
 - İngilizce
+- 2-6 kelime
+- Pexels'te bulunabilecek kadar genel
 - Gerçekçi
-- Pexels'te aranabilir
-- Hikâyeye uygun
-- Mümkünse 2 ile 6 kelime
+- Hikâyeye ve sahneye uygun
 
-olmalı.
+Ünlünün gerçek fotoğrafını aramak zorunda değilsin.
+
+Telifsiz ve genel atmosfer görüntüleri kullan.
+
+Örnek:
+concert crowd lights
+microphone backstage
+dark television studio
+old newspaper closeup
+social media phone screen
+empty dressing room
+
+Bunlar sadece örnektir.
+
+Aynı sorguyu tekrar etme.
+
+Thumbnail için tek bir İngilizce Pexels sorgusu üret.
 
 ============================================================
 
 AÇIKLAMA
 
-description alanına kısa ve doğal
-YouTube açıklaması yaz.
+Kısa, doğal ve merak uyandırıcı olsun.
+
+Etiket:
+En az 5, en fazla 15 adet.
 
 ============================================================
 
-ETİKETLER
-
-tags alanında
-en az 5,
-en fazla 15
-etiket olsun.
-
-============================================================
-
-NARRATION İÇİN
-
+NARRATION içinde:
 - Başlık yazma
 - Kaynak listesi yazma
 - Bölüm numarası yazma
+- "Kaynak:" yazma
 - JSON yazma
 
-Sadece doğal anlatım yaz.
-
-============================================================
-
-ZORUNLU ALANLAR:
+SADECE aşağıdaki geçerli JSON yapısını üret:
 
 title
 description
@@ -763,38 +849,83 @@ short_narration
 scene_queries
 short_queries
 thumbnail_query
-thumbnail_queries
+person
+topic
+topic_key
 
-KONTROL:
-
-- Hiçbir alan boş olmayacak
-- Ana hikâye gerçek olacak
-- Short aynı gerçek hikâyeye bağlı olacak
-- Short yaklaşık 30-55 saniyeyi hedefleyecek
-- scene_queries 12 adet olacak
-- short_queries 6 adet olacak
-- thumbnail_queries 5 adet olacak
-- Başlıklar önceki başlıklarla çok benzer olmayacak
-- Kapak sorguları konuya özel ve güçlü olacak
-- Kapak sıradan rastgele bir görsel mantığıyla üretilmeyecek
-
-SADECE GEÇERLİ JSON DÖNDÜR.
-
-JSON dışında hiçbir açıklama yazma.
+Sadece JSON döndür.
 """
 
-    last_error = "İlk deneme"
+            schema = {
+                "type": "OBJECT",
+                "properties": {
+                    "title": {
+                        "type": "STRING"
+                    },
+                    "description": {
+                        "type": "STRING"
+                    },
+                    "tags": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "STRING"
+                        }
+                    },
+                    "narration": {
+                        "type": "STRING"
+                    },
+                    "short_title": {
+                        "type": "STRING"
+                    },
+                    "short_narration": {
+                        "type": "STRING"
+                    },
+                    "scene_queries": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "STRING"
+                        }
+                    },
+                    "short_queries": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "STRING"
+                        }
+                    },
+                    "thumbnail_query": {
+                        "type": "STRING"
+                    },
+                    "person": {
+                        "type": "STRING"
+                    },
+                    "topic": {
+                        "type": "STRING"
+                    },
+                    "topic_key": {
+                        "type": "STRING"
+                    }
+                },
+                "required": [
+                    "title",
+                    "description",
+                    "tags",
+                    "narration",
+                    "short_title",
+                    "short_narration",
+                    "scene_queries",
+                    "short_queries",
+                    "thumbnail_query",
+                    "person",
+                    "topic",
+                    "topic_key"
+                ]
+            }
 
-    for attempt in range(5):
-
-        try:
-
-            print(
-                f"Hikâye hazırlanıyor... "
-                f"{attempt + 1}/5"
+            data = gemini_json(
+                prompt,
+                schema,
+                temperature=0.72
             )
-
-            data = gemini(prompt)
 
             required = [
                 "title",
@@ -806,37 +937,38 @@ JSON dışında hiçbir açıklama yazma.
                 "scene_queries",
                 "short_queries",
                 "thumbnail_query",
-                "thumbnail_queries"
+                "person",
+                "topic",
+                "topic_key"
             ]
 
             for field in required:
-
                 if field not in data:
                     raise ValueError(
-                        f"Eksik alan: {field}"
+                        "Eksik alan: "
+                        + field
                     )
 
-            text_fields = [
+            for field in [
                 "title",
                 "description",
                 "narration",
                 "short_title",
                 "short_narration",
-                "thumbnail_query"
-            ]
-
-            for field in text_fields:
-
-                value = str(
+                "thumbnail_query",
+                "person",
+                "topic",
+                "topic_key"
+            ]:
+                data[field] = clean_text(
                     data[field]
-                ).strip()
+                )
 
-                if not value:
+                if not data[field]:
                     raise ValueError(
-                        f"Boş alan: {field}"
+                        "Boş alan: "
+                        + field
                     )
-
-                data[field] = value
 
             main_words = wc(
                 data["narration"]
@@ -846,26 +978,53 @@ JSON dışında hiçbir açıklama yazma.
                 data["short_narration"]
             )
 
-            if main_words < 120:
-
+            if main_words < MAIN_MIN_WORDS:
                 raise ValueError(
-                    f"Ana anlatım fazla kısa: "
+                    f"Ana anlatım kısa: "
                     f"{main_words} kelime"
                 )
 
-            # Short artık 15 saniye gibi çok kısa çıkmasın.
-            if short_words < 65:
-
+            if main_words > MAIN_MAX_WORDS:
                 raise ValueError(
-                    f"Short fazla kısa: "
+                    f"Ana anlatım fazla uzun: "
+                    f"{main_words} kelime"
+                )
+
+            if short_words < SHORT_MIN_WORDS:
+                raise ValueError(
+                    f"Short kısa: "
                     f"{short_words} kelime"
+                )
+
+            if short_words > SHORT_MAX_WORDS:
+                raise ValueError(
+                    f"Short fazla uzun: "
+                    f"{short_words} kelime"
+                )
+
+            old_keys = {
+                clean_text(
+                    item.get(
+                        "topic_key",
+                        ""
+                    )
+                ).lower()
+                for item in history[-30:]
+            }
+
+            if (
+                data["topic_key"].lower()
+                in old_keys
+            ):
+                raise ValueError(
+                    "Aynı konu tekrar seçildi"
                 )
 
             data["scene_queries"] = (
                 normalize_queries(
                     data["scene_queries"],
                     12,
-                    "mysterious real discovery"
+                    "documentary investigation"
                 )
             )
 
@@ -873,7 +1032,7 @@ JSON dışında hiçbir açıklama yazma.
                 normalize_queries(
                     data["short_queries"],
                     6,
-                    "dramatic mysterious discovery"
+                    "mysterious documentary"
                 )
             )
 
@@ -884,32 +1043,31 @@ JSON dışında hiçbir açıklama yazma.
             )
 
             if not data["thumbnail_query"]:
-
                 data["thumbnail_query"] = (
-                    "mysterious hidden discovery"
+                    "dramatic documentary portrait"
                 )
-
-            data["thumbnail_queries"] = (
-                normalize_queries(
-                    data["thumbnail_queries"],
-                    5,
-                    "mysterious hidden discovery"
-                )
-            )
 
             data["tags"] = normalize_tags(
                 data["tags"]
             )
 
-            print(
-                "Plan kabul edildi."
-            )
+            data["_research"] = research
 
+            print("=" * 60)
+            print("PLAN KABUL EDİLDİ")
+            print("=" * 60)
+            print(
+                "Kişi:",
+                data["person"]
+            )
+            print(
+                "Konu:",
+                data["topic"]
+            )
             print(
                 "Ana kelime:",
                 main_words
             )
-
             print(
                 "Short kelime:",
                 short_words
@@ -918,21 +1076,21 @@ JSON dışında hiçbir açıklama yazma.
             return data
 
         except Exception as error:
-
             last_error = str(error)
 
             print(
-                f"Plan kontrolü "
-                f"{attempt + 1}/5: "
+                f"Plan reddedildi "
+                f"{attempt + 1}/8: "
                 f"{last_error}"
             )
 
-            if attempt < 4:
-                time.sleep(3)
+            if attempt < 7:
+                time.sleep(5)
 
     raise RuntimeError(
-        "Geçerli plan üretilemedi. Son hata: "
-        + last_error
+        "Geçerli ve farklı plan üretilemedi. "
+        "Son hata: "
+        + str(last_error)
     )
 
 
@@ -941,124 +1099,123 @@ JSON dışında hiçbir açıklama yazma.
 # ============================================================
 
 
-def pexels_search(
-    query,
-    orientation,
-    used=None
-):
+def pexels(query, orientation, used):
 
-    query = clean_query(query)
-
-    if not query:
-        query = "mysterious documentary"
-
-    response = requests.get(
-        "https://api.pexels.com/v1/search",
-        headers={
-            "Authorization": PEXELS
-        },
-        params={
-            "query": query,
-            "orientation": orientation,
-            "per_page": 30
-        },
-        timeout=60
+    original_query = clean_query(
+        query
     )
-
-    response.raise_for_status()
-
-    photos = response.json().get(
-        "photos",
-        []
-    )
-
-    if not photos:
-        return None, None
-
-    if used is None:
-        used = set()
-
-    photo = next(
-        (
-            item
-            for item in photos
-            if item.get("id") not in used
-        ),
-        photos[0]
-    )
-
-    used.add(
-        photo.get("id")
-    )
-
-    src = photo.get(
-        "src",
-        {}
-    )
-
-    if orientation == "portrait":
-
-        image_url = (
-            src.get("portrait")
-            or src.get("large2x")
-            or src.get("original")
-        )
-
-    else:
-
-        image_url = (
-            src.get("landscape")
-            or src.get("large2x")
-            or src.get("original")
-        )
-
-    return photo, image_url
-
-
-def pexels(
-    query,
-    orientation,
-    used
-):
-
-    photo, image_url = pexels_search(
-        query,
-        orientation,
-        used
-    )
-
-    if photo and image_url:
-        return photo, image_url
 
     fallback_queries = [
-        "mysterious discovery",
-        "dark empty room",
-        "old hidden object",
-        "investigation evidence",
-        "mysterious abandoned place"
+        original_query,
+        "documentary portrait",
+        "dramatic person",
+        "television studio",
+        "concert crowd"
     ]
 
-    for fallback in fallback_queries:
+    last_error = None
 
-        photo, image_url = pexels_search(
-            fallback,
-            orientation,
-            used
-        )
+    for search_query in fallback_queries:
 
-        if photo and image_url:
+        if not search_query:
+            continue
 
-            print(
-                "Pexels yedek sorgu kullanıldı:",
-                fallback
+        try:
+            response = requests.get(
+                "https://api.pexels.com/v1/search",
+                headers={
+                    "Authorization": PEXELS
+                },
+                params={
+                    "query": search_query,
+                    "orientation": orientation,
+                    "per_page": 30
+                },
+                timeout=60
             )
 
-            return photo, image_url
+            response.raise_for_status()
+
+            photos = response.json().get(
+                "photos",
+                []
+            )
+
+            if not photos:
+                continue
+
+            photo = next(
+                (
+                    item
+                    for item in photos
+                    if item["id"] not in used
+                ),
+                photos[0]
+            )
+
+            used.add(
+                photo["id"]
+            )
+
+            src = photo.get(
+                "src",
+                {}
+            )
+
+            if orientation == "portrait":
+                image_url = (
+                    src.get("portrait")
+                    or src.get("large2x")
+                    or src.get("original")
+                )
+            else:
+                image_url = (
+                    src.get("landscape")
+                    or src.get("large2x")
+                    or src.get("original")
+                )
+
+            if image_url:
+                return photo, image_url
+
+        except Exception as error:
+            last_error = str(error)
 
     raise RuntimeError(
         "Pexels görseli bulunamadı: "
-        + str(query)
+        + original_query
+        + " | "
+        + str(last_error)
     )
+
+
+def valid_image(path):
+    try:
+        if (
+            not path.exists()
+            or path.stat().st_size < 5000
+        ):
+            return False
+
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=p=0",
+                str(path)
+            ],
+            capture_output=True,
+            text=True
+        )
+
+        return result.returncode == 0
+
+    except Exception:
+        return False
 
 
 def images(
@@ -1075,163 +1232,71 @@ def images(
         queries,
         1
     ):
-
         print(
             f"Görsel {number}/"
             f"{len(queries)}: "
             f"{query}"
         )
 
-        photo, image_url = pexels(
-            query,
-            orientation,
-            used
-        )
+        success = False
+        last_error = None
 
-        file_path = OUT / (
-            f"{prefix}_{number:02d}.jpg"
-        )
+        for attempt in range(4):
 
-        response = requests.get(
-            image_url,
-            timeout=90
-        )
+            try:
+                photo, image_url = pexels(
+                    query,
+                    orientation,
+                    used
+                )
 
-        response.raise_for_status()
+                file_path = OUT / (
+                    f"{prefix}_{number:02d}.jpg"
+                )
 
-        file_path.write_bytes(
-            response.content
-        )
+                response = requests.get(
+                    image_url,
+                    timeout=90
+                )
 
-        if file_path.stat().st_size < 5000:
+                response.raise_for_status()
 
+                file_path.write_bytes(
+                    response.content
+                )
+
+                if not valid_image(
+                    file_path
+                ):
+                    raise RuntimeError(
+                        "Bozuk görsel indirildi"
+                    )
+
+                files.append(
+                    file_path
+                )
+
+                credits.append(
+                    photo
+                )
+
+                success = True
+                break
+
+            except Exception as error:
+                last_error = str(error)
+
+                time.sleep(
+                    2 * (attempt + 1)
+                )
+
+        if not success:
             raise RuntimeError(
-                "Bozuk Pexels görseli: "
-                + str(file_path)
+                f"Görsel indirilemedi: "
+                f"{query} | {last_error}"
             )
-
-        files.append(file_path)
-        credits.append(photo)
 
     return files, credits
-
-
-# ============================================================
-# THUMBNAIL GÖRSELİ
-# ============================================================
-
-
-def download_thumbnail(
-    main_query,
-    alternative_queries
-):
-
-    all_queries = []
-
-    main_query = clean_query(
-        main_query
-    )
-
-    if main_query:
-        all_queries.append(
-            main_query
-        )
-
-    if isinstance(
-        alternative_queries,
-        list
-    ):
-
-        for query in alternative_queries:
-
-            query = clean_query(
-                query
-            )
-
-            if (
-                query
-                and query not in all_queries
-            ):
-                all_queries.append(
-                    query
-                )
-
-    fallback_queries = [
-        "mysterious hidden discovery",
-        "dramatic abandoned room",
-        "dark secret door",
-        "old mysterious evidence",
-        "lonely person investigation"
-    ]
-
-    for query in fallback_queries:
-
-        if query not in all_queries:
-            all_queries.append(query)
-
-    print("=" * 60)
-    print("KAPAK GÖRSELİ ARANIYOR")
-    print("=" * 60)
-
-    for number, query in enumerate(
-        all_queries,
-        1
-    ):
-
-        print(
-            f"Kapak sorgusu "
-            f"{number}/{len(all_queries)}: "
-            f"{query}"
-        )
-
-        try:
-
-            photo, image_url = pexels_search(
-                query,
-                "landscape",
-                set()
-            )
-
-            if not (
-                photo
-                and image_url
-            ):
-                continue
-
-            file_path = OUT / (
-                "thumbnail_source.jpg"
-            )
-
-            response = requests.get(
-                image_url,
-                timeout=90
-            )
-
-            response.raise_for_status()
-
-            file_path.write_bytes(
-                response.content
-            )
-
-            if file_path.stat().st_size >= 5000:
-
-                print(
-                    "Kapak görseli bulundu:",
-                    query
-                )
-
-                return file_path, photo
-
-        except Exception as error:
-
-            print(
-                "Kapak sorgusu başarısız:",
-                error
-            )
-
-    raise RuntimeError(
-        "Kapak için uygun görsel bulunamadı"
-    )
 
 
 # ============================================================
@@ -1272,7 +1337,6 @@ def tts(text, output):
         chunks.append(text)
 
     if not chunks:
-
         raise RuntimeError(
             "Seslendirilecek metin boş"
         )
@@ -1289,8 +1353,7 @@ def tts(text, output):
 
         print(
             f"Ses hazırlanıyor "
-            f"{number + 1}/"
-            f"{len(chunks)}"
+            f"{number + 1}/{len(chunks)}"
         )
 
         run(
@@ -1303,9 +1366,9 @@ def tts(text, output):
                 "--output_file",
                 str(wav),
                 "--sentence-silence",
-                "0.18",
+                "0.20",
                 "--length-scale",
-                "0.88",
+                "0.92",
                 "--noise-scale",
                 "0.667",
                 "--noise-w",
@@ -1314,7 +1377,9 @@ def tts(text, output):
             chunk
         )
 
-        wavs.append(wav)
+        wavs.append(
+            wav
+        )
 
     concat = OUT / (
         f"{output.stem}_concat.txt"
@@ -1362,7 +1427,7 @@ def tts(text, output):
 
 
 # ============================================================
-# VİDEO
+# VIDEO
 # ============================================================
 
 
@@ -1374,10 +1439,18 @@ def make_video(
 ):
 
     if not image_files:
-
         raise RuntimeError(
             "Video için görsel bulunamadı"
         )
+
+    for image_file in image_files:
+        if not valid_image(
+            image_file
+        ):
+            raise RuntimeError(
+                "Geçersiz görsel: "
+                + str(image_file)
+            )
 
     total_duration = duration(
         audio
@@ -1413,8 +1486,7 @@ def make_video(
         )
 
         lines.append(
-            f"duration "
-            f"{each_duration:.3f}"
+            f"duration {each_duration:.3f}"
         )
 
     last_image = str(
@@ -1441,6 +1513,7 @@ def make_video(
             "scale=1080:1920:"
             "force_original_aspect_ratio=increase,"
             "crop=1080:1920,"
+            "setsar=1,"
             "format=yuv420p"
         )
 
@@ -1450,6 +1523,7 @@ def make_video(
             "scale=1280:720:"
             "force_original_aspect_ratio=increase,"
             "crop=1280:720,"
+            "setsar=1,"
             "format=yuv420p"
         )
 
@@ -1475,6 +1549,8 @@ def make_video(
             "veryfast",
             "-crf",
             "22",
+            "-pix_fmt",
+            "yuv420p",
             "-c:a",
             "aac",
             "-b:a",
@@ -1485,6 +1561,16 @@ def make_video(
             str(output)
         ]
     )
+
+    if not output.exists():
+        raise RuntimeError(
+            "Video dosyası oluşmadı"
+        )
+
+    if output.stat().st_size < 100_000:
+        raise RuntimeError(
+            "Video dosyası olağan dışı küçük"
+        )
 
 
 # ============================================================
@@ -1533,29 +1619,19 @@ def upload(
 
     body = {
         "snippet": {
-
-            "title": str(
-                title
-            )[:100],
-
+            "title": str(title)[:100],
             "description": str(
                 description
             )[:5000],
-
             "tags": [
                 str(tag)
                 for tag in tags[:30]
             ],
-
-            "categoryId": "27"
+            "categoryId": "24"
         },
-
         "status": {
-
             "privacyStatus": "public",
-
             "selfDeclaredMadeForKids": False,
-
             "containsSyntheticMedia": True
         }
     }
@@ -1567,30 +1643,24 @@ def upload(
         chunksize=8 * 1024 * 1024
     )
 
-    request = (
-        api.videos().insert(
-            part="snippet,status",
-            body=body,
-            media_body=media
-        )
+    request = api.videos().insert(
+        part="snippet,status",
+        body=body,
+        media_body=media
     )
 
     response = None
 
     while response is None:
 
-        status, response = (
-            request.next_chunk()
-        )
+        status, response = request.next_chunk()
 
         if status:
-
             print(
                 "YouTube "
                 + str(
                     int(
-                        status.progress()
-                        * 100
+                        status.progress() * 100
                     )
                 )
                 + "%"
@@ -1601,8 +1671,8 @@ def upload(
     if (
         thumbnail
         and thumbnail.exists()
+        and valid_image(thumbnail)
     ):
-
         api.thumbnails().set(
             videoId=video_id,
             media_body=MediaFileUpload(
@@ -1639,18 +1709,23 @@ def thumbnail(
             (
                 "scale=1280:720:"
                 "force_original_aspect_ratio=increase,"
-                "crop=1280:720"
+                "crop=1280:720,"
+                "setsar=1"
             ),
             "-q:v",
-            "5",
+            "7",
             str(output)
         ]
     )
 
-    if (
-        output.stat().st_size
-        > 1_900_000
+    if not valid_image(
+        output
     ):
+        raise RuntimeError(
+            "Kapak görseli oluşturulamadı"
+        )
+
+    if output.stat().st_size > 1_900_000:
 
         run(
             [
@@ -1659,7 +1734,7 @@ def thumbnail(
                 "-i",
                 str(output),
                 "-q:v",
-                "9",
+                "10",
                 str(output)
             ]
         )
@@ -1674,37 +1749,49 @@ def main():
 
     print("=" * 60)
     print(
-        "KAYIP HİKAYELER - "
-        "YENİ OTOMASYON"
+        "KAYIP HİKAYELER"
+    )
+    print(
+        "TÜRKİYE'NİN KONUŞTUĞU"
+        " GERÇEK HİKAYELER"
     )
     print("=" * 60)
-
-    print(
-        "Niş: Gerçek, inanılmaz ve "
-        "merak uyandıran hikâyeler"
-    )
 
     setup()
 
     data = plan()
 
     print("=" * 60)
-    print("KONU:")
-    print(data["title"])
+    print("SEÇİLEN KİŞİ:")
+    print(
+        data["person"]
+    )
     print("=" * 60)
+
+    print("KONU:")
+    print(
+        data["topic"]
+    )
+    print("=" * 60)
+
+    print("ANA BAŞLIK:")
+    print(
+        data["title"]
+    )
+
+    print("SHORT BAŞLIK:")
+    print(
+        data["short_title"]
+    )
 
     print(
         "Ana kelime:",
-        wc(
-            data["narration"]
-        )
+        wc(data["narration"])
     )
 
     print(
         "Short kelime:",
-        wc(
-            data["short_narration"]
-        )
+        wc(data["short_narration"])
     )
 
     long_audio = OUT / "long.mp3"
@@ -1730,63 +1817,62 @@ def main():
 
     print(
         "Ana video süresi:",
-        round(
-            long_duration,
-            1
-        ),
+        round(long_duration, 1),
         "saniye"
     )
 
     print(
         "Short süresi:",
-        round(
-            short_duration,
-            1
-        ),
+        round(short_duration, 1),
         "saniye"
     )
 
-    if long_duration < 30:
-
+    # Ana video yaklaşık 6-8 dakika hedeflenir.
+    # Aşırı kısa veya aşırı uzun çıkarsa yükleme yapılmaz.
+    if long_duration < MAIN_MIN_SECONDS:
         raise RuntimeError(
-            "Ana video olağan dışı kısa: "
-            + f"{long_duration:.1f}"
-            + " saniye"
+            "Ana video hedef süreden kısa: "
+            + f"{long_duration:.1f} saniye"
         )
 
-    # Short 15 saniye gibi kısa çıkmasın.
-    if short_duration < 25:
+    if long_duration > MAIN_MAX_SECONDS:
+        raise RuntimeError(
+            "Ana video hedef süreden uzun: "
+            + f"{long_duration:.1f} saniye"
+        )
 
+    # Short yaklaşık 25-45 saniye hedeflenir.
+    # Güvenli tolerans: 22-55 saniye.
+    if short_duration < SHORT_MIN_SECONDS:
         raise RuntimeError(
             "Short fazla kısa: "
-            + f"{short_duration:.1f}"
-            + " saniye"
+            + f"{short_duration:.1f} saniye"
+        )
+
+    if short_duration > SHORT_MAX_SECONDS:
+        raise RuntimeError(
+            "Short fazla uzun: "
+            + f"{short_duration:.1f} saniye"
         )
 
     print(
-        "Ana video görselleri "
-        "indiriliyor..."
+        "Ana video görselleri indiriliyor..."
     )
 
-    long_images, long_credits = (
-        images(
-            data["scene_queries"],
-            "long",
-            "landscape"
-        )
+    long_images, long_credits = images(
+        data["scene_queries"],
+        "long",
+        "landscape"
     )
 
     print(
-        "Short görselleri "
-        "indiriliyor..."
+        "Short görselleri indiriliyor..."
     )
 
-    short_images, short_credits = (
-        images(
-            data["short_queries"],
-            "short",
-            "portrait"
-        )
+    short_images, short_credits = images(
+        data["short_queries"],
+        "short",
+        "portrait"
     )
 
     long_video = OUT / "long.mp4"
@@ -1799,7 +1885,8 @@ def main():
     make_video(
         long_audio,
         long_images,
-        long_video
+        long_video,
+        vertical=False
     )
 
     print(
@@ -1817,32 +1904,28 @@ def main():
         "Kapak hazırlanıyor..."
     )
 
-    thumbnail_source, thumbnail_credit = (
-        download_thumbnail(
-            data["thumbnail_query"],
-            data["thumbnail_queries"]
-        )
+    thumbnail_images, thumbnail_credits = images(
+        [data["thumbnail_query"]],
+        "thumbnail",
+        "landscape"
     )
 
-    thumbnail_file = (
-        OUT / "thumbnail.jpg"
-    )
+    thumbnail_file = OUT / "thumbnail.jpg"
 
     thumbnail(
-        thumbnail_source,
+        thumbnail_images[0],
         thumbnail_file
     )
 
     credits = []
 
-    for photo in (
+    all_credits = (
         long_credits
         + short_credits
-        + [thumbnail_credit]
-    ):
+        + thumbnail_credits
+    )
 
-        if not photo:
-            continue
+    for photo in all_credits:
 
         photo_url = photo.get(
             "url",
@@ -1855,18 +1938,13 @@ def main():
         )
 
         if photo_url:
-
             credits.append(
-                f"Photo by "
-                f"{photographer} "
-                f"on Pexels: "
-                f"{photo_url}"
+                f"Photo by {photographer} "
+                f"on Pexels: {photo_url}"
             )
 
     unique_credits = list(
-        dict.fromkeys(
-            credits
-        )
+        dict.fromkeys(credits)
     )
 
     description = (
@@ -1874,25 +1952,33 @@ def main():
             data["description"]
         ).strip()
         + "\n\n"
-        + "Bu video özgün senaryo, "
-        + "yapay zekâ destekli seslendirme "
-        + "ve görseller kullanılarak "
-        + "hazırlanmıştır."
+        + "Bu video kamuya açık ve "
+        + "doğrulanabilir bilgiler temel alınarak "
+        + "belgesel anlatım formatında hazırlanmıştır."
         + "\n\n"
-        + "Pexels kaynakları:\n"
-        + "\n".join(
-            unique_credits
+        + "Anlatım ve görsel düzenleme "
+        + "yapay zekâ desteğiyle hazırlanmıştır."
+    )
+
+    if unique_credits:
+        description += (
+            "\n\nPexels kaynakları:\n"
+            + "\n".join(
+                unique_credits
+            )
         )
-        + "\n\n"
+
+    description += (
+        "\n\n"
         + "#KayıpHikayeler "
-        + "#Gizem "
         + "#GerçekHikayeler "
-        + "#Belgesel"
+        + "#Türkiye "
+        + "#Ünlüler "
+        + "#Fenomenler"
     )
 
     print(
-        "YouTube bağlantısı "
-        "hazırlanıyor..."
+        "YouTube bağlantısı hazırlanıyor..."
     )
 
     api = youtube()
@@ -1903,7 +1989,7 @@ def main():
     )
     print("=" * 60)
 
-    upload(
+    long_id = upload(
         api,
         long_video,
         data["title"],
@@ -1918,7 +2004,7 @@ def main():
     )
     print("=" * 60)
 
-    upload(
+    short_id = upload(
         api,
         short_video,
         data["short_title"],
@@ -1926,18 +2012,47 @@ def main():
         data["tags"]
     )
 
-    # Video başarıyla üretildi ve yüklendi.
-    # Aynı başlıkların tekrarını önlemek için kaydet.
+    # ========================================================
+    # SADECE İKİ VİDEO DA BAŞARIYLA YÜKLENDİKTEN SONRA
+    # KONUYU GEÇMİŞE KAYDET.
+    # Böylece bir sonraki çalıştırmada aynı kişi ve olay
+    # tekrar seçilmeyecek.
+    # ========================================================
+
     save_history(
-        data["title"]
+        {
+            "person": data["person"],
+            "topic": data["topic"],
+            "topic_key": data["topic_key"],
+            "title": data["title"],
+            "short_title": data["short_title"],
+            "youtube_video_id": long_id,
+            "youtube_short_id": short_id,
+            "created_at": int(
+                time.time()
+            )
+        }
     )
 
     print("=" * 60)
     print(
-        "OTOMASYON BAŞARIYLA "
-        "TAMAMLANDI"
+        "OTOMASYON BAŞARIYLA TAMAMLANDI"
     )
     print("=" * 60)
+
+    print(
+        "Ana video ID:",
+        long_id
+    )
+
+    print(
+        "Short ID:",
+        short_id
+    )
+
+    print(
+        "Konu geçmişe kaydedildi."
+    )
 
 
 if __name__ == "__main__":
