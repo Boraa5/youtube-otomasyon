@@ -15,9 +15,17 @@ from googleapiclient.http import MediaFileUpload
 
 # ============================================================
 # KAYIP HİKAYELER - YENİ OTOMASYON
+#
 # NİŞ:
 # Gerçek, inanılmaz ve merak uyandıran kaybolma / bulunma /
 # yıllar sonra ortaya çıkan / gizli kalmış gerçek hikâyeler
+#
+# ANA VİDEO:
+# Konunun doğal uzunluğunda
+#
+# SHORT:
+# Aynı hikâyeye bağlı, yaklaşık 35-55 saniye
+# 30 saniyeden kısa Short yüklenmez
 # ============================================================
 
 
@@ -220,9 +228,8 @@ def gemini(prompt):
 
                 time.sleep(wait)
 
-            else:
-                if attempt < 2:
-                    time.sleep(5)
+            elif attempt < 2:
+                time.sleep(5)
 
     raise RuntimeError(
         "Gemini içerik üretilemedi: "
@@ -416,24 +423,38 @@ Short, ana videodaki AYNI GERÇEK HİKÂYEYE bağlı olsun.
 
 Ama ana anlatımın küçük bir kopyası olmasın.
 
-Short doğal uzunlukta olsun.
-Süreyi doldurmak için gereksiz cümle ekleme.
+ÇOK ÖNEMLİ:
+
+15-20 saniyelik çok kısa bir Short üretme.
+
+Hedef ses süresi yaklaşık 35 ile 55 saniye arasında olsun.
+
+Bunun için short_narration yaklaşık 85 ile 140 Türkçe kelime
+arasında yazılmalı.
+
+KESİNLİKLE 85 kelimeden az yazma.
+150 kelimeyi geçme.
+
+Süreyi boş ve gereksiz cümlelerle uzatma.
+
+Ancak olayın en çarpıcı kısmını güçlü biçimde anlatacak kadar
+yeterli detay ver.
 
 Short ilk cümlede doğrudan en güçlü merakı oluştursun.
 
 İlk 3 saniye çok önemlidir.
 
-Short mantığı:
+İlk cümle izleyicinin durup videoyu izlemesini sağlayacak kadar
+güçlü olmalı.
 
-"Polis yıllarca onu aradı...
-Ama gerçek ortaya çıktığında cevap aslında hiç kimsenin beklemediği
-bir yerdeydi."
+Sonraki cümlelerde:
 
-Bu sadece mantık örneğidir.
-Aynı cümleyi kullanma.
+- Olayın ne olduğunu kısaca açıkla
+- En şaşırtıcı ayrıntıyı ver
+- Gerçeğin nasıl ortaya çıktığına dair merak oluştur
+- Hikâyenin tamamını öğrenme isteği bırak
 
-Short, hikâyenin en çarpıcı anını anlatsın ve izleyicide ana
-hikâyenin tamamını merak etme isteği oluştursun.
+Short, ana hikâyenin en çarpıcı anını anlatsın.
 
 BAŞLIK:
 
@@ -464,6 +485,7 @@ Ana video için TAM OLARAK 12 İngilizce sorgu üret.
 Short için TAM OLARAK 6 İngilizce sorgu üret.
 
 Her sorgu:
+
 - İngilizce olmalı
 - Gerçekçi olmalı
 - Pexels'te sonuç bulabilecek kadar genel olmalı
@@ -471,6 +493,7 @@ Her sorgu:
 - Mümkünse 2 ile 6 kelime arasında olmalı
 
 Karanlık atmosfer gerekiyorsa uygun sorgular kullan.
+
 Ancak aynı görsel fikrini sürekli tekrar etme.
 
 Örnek sorgu türleri:
@@ -483,6 +506,7 @@ forest search
 locked basement door
 
 Bunlar sadece örnektir.
+
 Hikâyeye göre yeni sorgular üret.
 
 AÇIKLAMA:
@@ -494,6 +518,7 @@ ETİKETLER:
 tags alanında en az 5, en fazla 15 alakalı etiket olsun.
 
 NARRATION içinde:
+
 - Başlık yazma
 - Kaynak listesi yazma
 - JSON yazma
@@ -517,8 +542,10 @@ KONTROL:
 
 - Hiçbir alan boş olmayacak.
 - narration doğal ve yeterli uzunlukta olacak.
-- Kesin kelime sınırı nedeniyle hikâye reddedilmeyecek.
-- short_narration doğal ve güçlü olacak.
+- Kesin kelime sınırı nedeniyle ana hikâye gereksiz uzatılmayacak.
+- short_narration 85 ile 150 Türkçe kelime arasında olacak.
+- Short hedef olarak yaklaşık 35 ile 55 saniye sürecek.
+- 30 saniyeden kısa olacak şekilde yazma.
 - scene_queries tercihen 12 adet olacak.
 - short_queries tercihen 6 adet olacak.
 - thumbnail_query boş olmayacak.
@@ -604,8 +631,6 @@ JSON dışında hiçbir açıklama yazma.
                     "mysterious investigation"
                 )
 
-            # Ana hikâye artık katı bir kelime sınırı
-            # yüzünden reddedilmiyor.
             main_words = wc(
                 data["narration"]
             )
@@ -614,18 +639,20 @@ JSON dışında hiçbir açıklama yazma.
                 data["short_narration"]
             )
 
-            # Sadece gerçekten eksik / bozuk üretimleri reddet.
-            # 165, 278 gibi doğal uzunluklar kesinlikle kabul edilir.
+            # Ana video doğal uzunlukta kalır.
+            # Sadece gerçekten anlamsız derecede kısa üretimler reddedilir.
             if main_words < 120:
                 raise ValueError(
                     f"Ana anlatım fazla kısa: "
                     f"{main_words} kelime"
                 )
 
-            if short_words < 25:
+            # Short kesinlikle çok kısa kabul edilmez.
+            if not 85 <= short_words <= 150:
                 raise ValueError(
-                    f"Short fazla kısa: "
-                    f"{short_words} kelime"
+                    f"Short kelime sayısı uygun değil: "
+                    f"{short_words}. "
+                    f"85-150 kelime gerekli."
                 )
 
             data["scene_queries"] = normalize_queries(
@@ -1242,19 +1269,27 @@ def main():
         "saniye"
     )
 
-    # Süre artık katı şekilde 5-9 dakikaya
-    # veya 180 saniyeye zorlanmıyor.
-    # Hikâye doğal uzunluğunda kabul edilir.
+    # Ana video konunun doğal süresinde kalır.
     if long_duration < 30:
         raise RuntimeError(
             "Ana video olağan dışı kısa: "
             + f"{long_duration:.1f} saniye"
         )
 
-    if short_duration < 10:
+    # Short artık 15 saniye gibi kısa üretilemez.
+    # 30 saniyenin altındaki Short YÜKLENMEZ.
+    if short_duration < 30:
         raise RuntimeError(
-            "Short olağan dışı kısa: "
-            + f"{short_duration:.1f} saniye"
+            "Short çok kısa üretildi: "
+            + f"{short_duration:.1f} saniye. "
+            + "Minimum 30 saniye gerekli."
+        )
+
+    if short_duration > 70:
+        raise RuntimeError(
+            "Short gereğinden uzun üretildi: "
+            + f"{short_duration:.1f} saniye. "
+            + "Maximum 70 saniye gerekli."
         )
 
     print("Ana video görselleri indiriliyor...")
